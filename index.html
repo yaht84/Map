@@ -89,7 +89,7 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useRef, useEffect, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Trash2, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation, Save } from 'lucide-react';
+        import { Trash2, Plus, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation, Save } from 'lucide-react';
 
         const ROOM_W = 1280;
         const ROOM_H = 720;
@@ -439,7 +439,7 @@
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-                const res = 5; // Higher resolution for smoother isolines
+                const res = 2; // Higher resolution for smoother heatmap
 
                 ctx.clearRect(0, 0, ROOM_W, ROOM_H);
 
@@ -497,20 +497,26 @@
                     }
                 }
 
-                // Fill with quantized colors (discrete bands between isolines)
+                // Fill with smooth continuous colors (no quantization)
+                const imgData = ctx.createImageData(cols * res, rows * res);
                 for (let c = 0; c < cols; c++) {
                     for (let r = 0; r < rows; r++) {
                         let val = grid[r * cols + c];
-                        // Quantize to nearest level below
-                        let quantized = isoMin;
-                        for (let i = levels.length - 1; i >= 0; i--) {
-                            if (val >= levels[i]) { quantized = levels[i]; break; }
+                        const { r: rC, g: gC, b: bC } = isoColorRgb(val, minDb, maxDb);
+                        for (let dy = 0; dy < res; dy++) {
+                            for (let dx = 0; dx < res; dx++) {
+                                const px = c * res + dx;
+                                const py = r * res + dy;
+                                const idx = (py * cols * res + px) * 4;
+                                imgData.data[idx] = rC;
+                                imgData.data[idx + 1] = gC;
+                                imgData.data[idx + 2] = bC;
+                                imgData.data[idx + 3] = 179; // 0.7 opacity
+                            }
                         }
-                        const { r: rC, g: gC, b: bC } = isoColorRgb(quantized, minDb, maxDb);
-                        ctx.fillStyle = `rgba(${rC}, ${gC}, ${bC}, 0.7)`;
-                        ctx.fillRect((startCol + c) * res, (startRow + r) * res, res, res);
                     }
                 }
+                ctx.putImageData(imgData, startCol * res, startRow * res);
 
                 // Draw contour lines using marching squares
                 for (const level of levels) {
@@ -633,6 +639,36 @@
                 alert('Pozycje punktów zostały zapisane!');
             };
 
+            // Renumber all points sequentially starting from 1
+            const renumberPoints = (pts) => pts.map((p, i) => ({ ...p, id: i + 1 }));
+
+            // Add a new point at the center of the visible area
+            const addPoint = () => {
+                const newId = points.length + 1;
+                const cx = border.left + border.width / 2;
+                const cy = border.top + border.height / 2;
+                const newPoint = {
+                    id: newId,
+                    x: Math.round(cx / 10) * 10,
+                    y: Math.round(cy / 10) * 10,
+                    value: 80.0,
+                    label: `Pkt_${newId}`,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                };
+                setPoints([...points, newPoint]);
+            };
+
+            // Delete a point and renumber remaining
+            const deletePoint = (pointId) => {
+                const updated = renumberPoints(points.filter(p => p.id !== pointId));
+                setPoints(updated);
+                if (selectedPoint?.id === pointId) setSelectedPoint(null);
+                else if (selectedPoint) {
+                    const refreshed = updated.find(p => p.x === selectedPoint.x && p.y === selectedPoint.y);
+                    if (refreshed) setSelectedPoint(refreshed);
+                }
+            };
+
             const handleImageUpload = (e) => {
                 const file = e.target.files[0];
                 if (file) {
@@ -734,8 +770,8 @@
                                                 <g key={unit.id}>
                                                     <rect
                                                         x={unit.x} y={unit.y} width={unit.width} height={unit.height}
-                                                        fill="rgba(6, 182, 212, 0.15)"
-                                                        stroke="rgba(6, 182, 212, 1)"
+                                                        fill="rgba(255, 255, 255, 0.15)"
+                                                        stroke="rgba(255, 255, 255, 0.8)"
                                                         strokeWidth="3"
                                                         strokeDasharray="6,4"
                                                         rx="2"
@@ -743,7 +779,7 @@
                                                     <text
                                                         x={unit.x + unit.width / 2} y={unit.y + unit.height / 2}
                                                         textAnchor="middle" dominantBaseline="middle"
-                                                        fill="rgba(8, 145, 178, 1)" fontSize="18" fontWeight="bold"
+                                                        fill="rgba(255, 255, 255, 0.9)" fontSize="18" fontWeight="bold"
                                                     >
                                                         {unit.line}{unit.id}
                                                     </text>
@@ -790,13 +826,8 @@
                                     </div>
                                 ))}
                             </div>
-                            <div className="text-center mt-2 flex justify-center gap-4">
-                                <label className="text-[9px] text-slate-500 uppercase flex items-center gap-1"> ⚙️ X: <input type="number" value={layoutOffset.x} onChange={e => setLayoutOffset(prev => ({ ...prev, x: Number(e.target.value) }))} className="w-10 px-1 text-black bg-white border border-slate-300 rounded" /></label>
-                                <label className="text-[9px] text-slate-500 uppercase flex items-center gap-1"> ⚙️ Y: <input type="number" value={layoutOffset.y} onChange={e => setLayoutOffset(prev => ({ ...prev, y: Number(e.target.value) }))} className="w-10 px-1 text-black bg-white border border-slate-300 rounded" /></label>
-                                <label className="text-[9px] text-slate-500 uppercase flex items-center gap-1"> ⚙️ S: <input type="number" step="0.01" value={layoutOffset.scale} onChange={e => setLayoutOffset(prev => ({ ...prev, scale: Number(e.target.value) }))} className="w-12 px-1 text-black bg-white border border-slate-300 rounded" /></label>
-                            </div>
                             <div className="text-center mt-2">
-                                <span className="text-[9px] text-slate-400">jarad@stop.pl |pkas@stop.pl|</span>
+                                <span className="text-[9px] text-slate-400">© CIOP-PIB 2026</span>
                             </div>
                         </div>
 
@@ -807,7 +838,12 @@
                                     <Database size={16} className="text-blue-400" />
                                     Wyniki Pomiarów
                                 </div>
-                                <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-black">{points.length} Punktów</span>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={addPoint} className="bg-green-600 hover:bg-green-500 px-2 py-1 rounded-lg text-xs font-black flex items-center gap-1 transition-all" title="Dodaj punkt">
+                                        <Plus size={12} /> Dodaj
+                                    </button>
+                                    <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-black">{points.length} Punktów</span>
+                                </div>
                             </div>
 
                             {selectedPoint && (
@@ -821,13 +857,28 @@
 
                                     <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-4 text-center">
                                         <p className="text-[9px] text-slate-500 uppercase font-black mb-1">Obecna wartość</p>
-                                        <p className="text-5xl font-black" style={{ color: getNoiseColor(selectedPoint.value) }}>{selectedPoint.value}</p>
+                                        <p className="text-5xl font-black" style={{ color: getNoiseColor(selectedPoint.value) }}>{Number(selectedPoint.value).toFixed(1)}</p>
                                         <p className="text-[9px] text-slate-400 mt-1 font-bold uppercase tracking-widest">dB(A)</p>
                                     </div>
 
                                     <div>
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <input
+                                                type="number" min="30" max="130" step="0.1"
+                                                value={selectedPoint.value}
+                                                onChange={(e) => {
+                                                    const v = parseFloat(e.target.value);
+                                                    if (!isNaN(v)) {
+                                                        setPoints(points.map(p => p.id === selectedPoint.id ? { ...p, value: v } : p));
+                                                        setSelectedPoint({ ...selectedPoint, value: v });
+                                                    }
+                                                }}
+                                                className="w-24 px-3 py-2 text-lg font-black text-center bg-slate-700 text-white border border-slate-600 rounded-xl focus:outline-none focus:border-blue-500"
+                                            />
+                                            <span className="text-[9px] text-slate-400 uppercase font-bold">dB(A)</span>
+                                        </div>
                                         <input
-                                            type="range" min="65" max="105" step="0.5" value={selectedPoint.value}
+                                            type="range" min="30" max="130" step="0.1" value={selectedPoint.value}
                                             onChange={(e) => {
                                                 const v = parseFloat(e.target.value);
                                                 setPoints(points.map(p => p.id === selectedPoint.id ? { ...p, value: v } : p));
@@ -835,7 +886,7 @@
                                             }}
                                             className="w-full h-4 bg-slate-100 rounded-full appearance-none cursor-pointer accent-blue-600 mb-2"
                                         />
-                                        <p className="text-[9px] text-slate-400 uppercase text-center">Przesuń aby edytować (Symulacja)</p>
+                                        <p className="text-[9px] text-slate-400 uppercase text-center">Przesuń suwak lub wpisz wartość z klawiatury</p>
                                     </div>
                                 </div>
                             )}
@@ -852,9 +903,18 @@
                                             <span className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-white" style={{ backgroundColor: getNoiseColor(p.value) }}>
                                                 {p.id}
                                             </span>
-                                            <span className="font-bold text-slate-600 text-[10px] uppercase">Pkt {p.id} ({p.label})</span>
+                                            <span className="font-bold text-slate-600 text-[10px] uppercase">Pkt {p.id}</span>
                                         </div>
-                                        <span className="text-xl font-black tracking-tighter" style={{ color: getNoiseColor(p.value) }}>{p.value} <small className="text-[10px] opacity-50 font-bold">dB</small></span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xl font-black tracking-tighter" style={{ color: getNoiseColor(p.value) }}>{Number(p.value).toFixed(1)} <small className="text-[10px] opacity-50 font-bold">dB</small></span>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); deletePoint(p.id); }}
+                                                className="p-1 rounded-lg bg-red-100 text-red-500 hover:bg-red-200 transition-all"
+                                                title="Usuń punkt"
+                                            >
+                                                <Trash2 size={14} />
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
