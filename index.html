@@ -5,12 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mapa Akustyczna</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Babel for in-browser JSX transcription -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
-    <!-- Esbuild / ES modules import map -->
     <script type="importmap">
     {
       "imports": {
@@ -80,6 +79,20 @@
             filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.5));
             transform: scale(1.1);
         }
+
+        .sidebar-enter {
+            transition: width 0.3s ease, opacity 0.3s ease;
+        }
+
+        .octave-dropdown {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .no-data-point {
+            opacity: 0.4;
+            filter: grayscale(1);
+        }
     </style>
 </head>
 
@@ -87,17 +100,23 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useRef, useEffect, useMemo } from 'react';
+        import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Trash2, Plus, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation, Save } from 'lucide-react';
+        import { Trash2, Plus, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation, Save, ChevronRight, ChevronLeft, Download, Upload, AlertTriangle } from 'lucide-react';
 
         const ROOM_W = 1280;
         const ROOM_H = 720;
 
-        // -------------------------------------------------------
-        // Auto-detect ⊗ marker positions from Prezentacja2.jpg.
-        // Returns a Promise that resolves with an array of {x,y} objects
-        // sorted top-left to bottom-right in row order.
+        // 1/3 octave band frequencies
+        const OCTAVE_BANDS = [
+            '0.8 Hz','1 Hz','1.25 Hz','1.6 Hz','2 Hz','2.5 Hz','3.15 Hz','4 Hz','5 Hz',
+            '6.3 Hz','8 Hz','10 Hz','12.5 Hz','16 Hz','20 Hz','25 Hz','31.5 Hz','40 Hz',
+            '50 Hz','63 Hz','80 Hz','100 Hz','125 Hz','160 Hz','200 Hz','250 Hz','315 Hz',
+            '400 Hz','500 Hz','630 Hz','800 Hz','1000 Hz','1250 Hz','1600 Hz','2000 Hz',
+            '2500 Hz','3150 Hz','4000 Hz','5000 Hz','6300 Hz','8000 Hz','10000 Hz',
+            '12500 Hz','16000 Hz'
+        ];
+
         // -------------------------------------------------------
         function detectMarkers(imageSrc) {
             return new Promise((resolve) => {
@@ -110,7 +129,6 @@
                     ctx.drawImage(img, 0, 0);
                     const data = ctx.getImageData(0, 0, W, H).data;
 
-                    // Binary: dark pixels that are NOT strongly red/blue/cyan
                     const binary = new Uint8Array(W * H);
                     for (let i = 0; i < W * H; i++) {
                         const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
@@ -120,7 +138,6 @@
                         }
                     }
 
-                    // 8-connected component analysis
                     const labels = new Int32Array(W * H);
                     let nextLabel = 1;
                     const components = [];
@@ -161,14 +178,12 @@
                         }
                     }
 
-                    // Filter: ⊗ symbols are ~16-35 px bounding box, roughly square, pixel count 40-400
                     let markers = components.filter(c =>
                         c.bw >= 14 && c.bw <= 38 && c.bh >= 14 && c.bh <= 38 &&
                         c.bw / c.bh >= 0.5 && c.bw / c.bh <= 2.0 &&
                         c.count >= 40 && c.count <= 400
                     );
 
-                    // Sort into rows (cluster by Y, tolerance 30px)
                     markers.sort((a, b) => a.cy - b.cy);
                     const rows = [];
                     let curRow = [markers[0]];
@@ -182,14 +197,13 @@
                     }
                     if (curRow.length > 0) rows.push(curRow);
 
-                    // Sort each row by X, then flatten
                     const sorted = [];
                     for (const row of rows) {
                         row.sort((a, b) => a.cx - b.cx);
                         for (const m of row) sorted.push({ x: m.cx, y: m.cy });
                     }
 
-                    console.log('Detected ' + sorted.length + ' markers in ' + rows.length + ' rows:', rows.map(r => r.length).join(', '));
+                    console.log('Detected ' + sorted.length + ' markers in ' + rows.length + ' rows');
                     resolve(sorted);
                 };
                 img.onerror = () => resolve([]);
@@ -197,7 +211,6 @@
             });
         }
 
-        // Also detect the thick black border rectangle from the image
         function detectBorder(imageSrc) {
             return new Promise((resolve) => {
                 const img = new Image();
@@ -214,30 +227,28 @@
                         return (data[idx] + data[idx + 1] + data[idx + 2]) / 3 < 60;
                     };
 
-                    // Scan for top border
                     let top = 0, bottom = H - 1, left = 0, right = W - 1;
-                    outer1: for (let y = 0; y < H; y++) {
+                    for (let y = 0; y < H; y++) {
                         let darkCount = 0;
                         for (let x = 0; x < W; x++) { if (isDark(x, y)) darkCount++; }
                         if (darkCount > W * 0.5) { top = y; break; }
                     }
-                    outer2: for (let y = H - 1; y >= 0; y--) {
+                    for (let y = H - 1; y >= 0; y--) {
                         let darkCount = 0;
                         for (let x = 0; x < W; x++) { if (isDark(x, y)) darkCount++; }
                         if (darkCount > W * 0.5) { bottom = y; break; }
                     }
-                    outer3: for (let x = 0; x < W; x++) {
+                    for (let x = 0; x < W; x++) {
                         let darkCount = 0;
                         for (let y = 0; y < H; y++) { if (isDark(x, y)) darkCount++; }
                         if (darkCount > H * 0.5) { left = x; break; }
                     }
-                    outer4: for (let x = W - 1; x >= 0; x--) {
+                    for (let x = W - 1; x >= 0; x--) {
                         let darkCount = 0;
                         for (let y = 0; y < H; y++) { if (isDark(x, y)) darkCount++; }
                         if (darkCount > H * 0.5) { right = x; break; }
                     }
 
-                    console.log('Border detected:', { left, top, right, bottom });
                     resolve({ left, top, right, bottom, width: right - left, height: bottom - top });
                 };
                 img.onerror = () => resolve({ left: 40, top: 30, right: 1240, bottom: 690, width: 1200, height: 660 });
@@ -245,14 +256,7 @@
             });
         }
 
-
-        // -------------------------------------------------------
-        // Label descriptions for each point index
-        // -------------------------------------------------------
         const LABELS = [];
-        // Rows 1..5 structure: 13, 11, 13, 11, 13, then 2 far-right  (may vary based on detection)
-        // We assign labels dynamically based on row length
-
         const rowLabels = (rowIdx, count) => {
             const prefixes = ['Top', 'EdgeB', 'Mid', 'EdgeA', 'Bot', 'FarRight'];
             const prefix = prefixes[rowIdx] || `R${rowIdx}`;
@@ -262,7 +266,6 @@
         };
 
         const PRINTING_UNITS = [
-            // Line B (top=163, bottom=293, height=130)
             { id: '10', line: 'B', unit: 10, x: 188, y: 163, width: 98, height: 130 },
             { id: '9', line: 'B', unit: 9, x: 286, y: 163, width: 81, height: 130 },
             { id: '8', line: 'B', unit: 8, x: 367, y: 163, width: 81, height: 130 },
@@ -273,8 +276,6 @@
             { id: '3', line: 'B', unit: 3, x: 681, y: 163, width: 47, height: 130 },
             { id: '2', line: 'B', unit: 2, x: 728, y: 163, width: 52, height: 130 },
             { id: '1', line: 'B', unit: 1, x: 780, y: 163, width: 51, height: 130 },
-
-            // Line A (top=435, bottom=622, height=130)
             { id: '10', line: 'A', unit: 10, x: 188, y: 435, width: 98, height: 130 },
             { id: '9', line: 'A', unit: 9, x: 286, y: 435, width: 81, height: 130 },
             { id: '8', line: 'A', unit: 8, x: 367, y: 435, width: 81, height: 130 },
@@ -287,6 +288,94 @@
             { id: '1', line: 'A', unit: 1, x: 780, y: 435, width: 51, height: 130 }
         ];
 
+        // -------------------------------------------------------
+        // Parse Excel file
+        // -------------------------------------------------------
+        function parseExcelData(arrayBuffer) {
+            const wb = XLSX.read(arrayBuffer, { type: 'array' });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+            // Row 0 = header (types), Row 1 = frequency labels, Row 2+ = data
+            const headerRow = rows[0];
+            const freqRow = rows[1];
+
+            const measurements = [];
+            const warnings = [];
+
+            for (let i = 2; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || row.length === 0) continue;
+
+                const cpIdx = 93; // CP column
+                const cqIdx = 94; // CQ column
+                const cp = row[cpIdx];
+                const cq = row[cqIdx];
+
+                if (cp == null) continue; // Skip rows without point number
+
+                const pointNum = parseInt(cp);
+                if (isNaN(pointNum)) continue;
+
+                const cqStr = String(cq || '').trim().toUpperCase();
+                const modes = [];
+                if (cqStr.includes('Z')) modes.push('Z');
+                if (cqStr.includes('D')) modes.push('D');
+                if (modes.length === 0) continue;
+
+                // Extract main parameters
+                const LAeq = parseFloat(row[1]) || null;
+                const LASmax = parseFloat(row[2]) || null;
+                const LCpeak = parseFloat(row[3]) || null;
+
+                // Extract 1/3 octave Leq bands (columns E through AV = indices 4..47)
+                const octaveLeq = {};
+                for (let b = 0; b < 44; b++) {
+                    const freq = OCTAVE_BANDS[b];
+                    const val = parseFloat(row[4 + b]);
+                    if (!isNaN(val)) octaveLeq[freq] = val;
+                }
+
+                for (const mode of modes) {
+                    measurements.push({
+                        pointNum,
+                        mode,
+                        LAeq,
+                        LASmax,
+                        LCpeak,
+                        octaveLeq,
+                        rowIndex: i
+                    });
+                }
+            }
+
+            // Check for duplicates
+            const seen = {};
+            for (const m of measurements) {
+                const key = `${m.mode}_${m.pointNum}`;
+                if (!seen[key]) {
+                    seen[key] = [];
+                }
+                seen[key].push(m);
+            }
+
+            for (const [key, items] of Object.entries(seen)) {
+                if (items.length > 1) {
+                    const [mode, pointNum] = key.split('_');
+                    const modeName = mode === 'Z' ? 'Zbrojenie' : 'Drukowanie';
+                    warnings.push(`Punkt ${pointNum}, tryb ${modeName}: ${items.length} wierszy danych (wiersze Excel: ${items.map(it => it.rowIndex + 1).join(', ')}). Zostanie użyty ostatni wiersz.`);
+                }
+            }
+
+            // Build final map: mode -> pointNum -> measurement (last wins)
+            const dataByMode = { Z: {}, D: {} };
+            for (const m of measurements) {
+                dataByMode[m.mode][m.pointNum] = m;
+            }
+
+            return { dataByMode, warnings };
+        }
+
         const App = () => {
             const [points, setPoints] = useState([]);
             const [selectedPoint, setSelectedPoint] = useState(null);
@@ -296,7 +385,7 @@
             // Toggles
             const [showImage, setShowImage] = useState(true);
             const [imageOpacity, setImageOpacity] = useState(0.5);
-            const [imageSrc, setImageSrc] = useState('layout.jpg'); // Default background
+            const [imageSrc, setImageSrc] = useState('rzut2.jpg'); // Default: rzut2.jpg
 
             const [showHeatmap, setShowHeatmap] = useState(true);
             const [showPoints, setShowPoints] = useState(true);
@@ -308,6 +397,57 @@
 
             const canvasRef = useRef(null);
             const fileInputRef = useRef(null);
+            const excelInputRef = useRef(null);
+            const mapExportRef = useRef(null);
+
+            // Excel data state
+            const [excelData, setExcelData] = useState(null); // { dataByMode: {Z:{}, D:{}}, warnings: [] }
+            const [activeMode, setActiveMode] = useState('D'); // D=Drukowanie, Z=Zbrojenie
+            const [activeParam, setActiveParam] = useState('LAeq'); // LAeq, LASmax, LCpeak, or octave band freq
+            const [showOctaveDropdown, setShowOctaveDropdown] = useState(false);
+            const [importWarnings, setImportWarnings] = useState([]);
+            const [showWarnings, setShowWarnings] = useState(false);
+
+            // Sidebar state
+            const [sidebarOpen, setSidebarOpen] = useState(true);
+
+            // Get current value for a point based on active mode and param
+            const getPointValue = useCallback((pointId) => {
+                if (!excelData) return null;
+                const modeData = excelData.dataByMode[activeMode];
+                if (!modeData) return null;
+                const measurement = modeData[pointId];
+                if (!measurement) return null;
+
+                if (activeParam === 'LAeq') return measurement.LAeq;
+                if (activeParam === 'LASmax') return measurement.LASmax;
+                if (activeParam === 'LCpeak') return measurement.LCpeak;
+                // Octave band
+                if (measurement.octaveLeq && measurement.octaveLeq[activeParam] !== undefined) {
+                    return measurement.octaveLeq[activeParam];
+                }
+                return null;
+            }, [excelData, activeMode, activeParam]);
+
+            // Check if point has data in current mode
+            const pointHasData = useCallback((pointId) => {
+                if (!excelData) return true; // no excel loaded, show all normally
+                const modeData = excelData.dataByMode[activeMode];
+                return modeData && modeData[pointId] !== undefined;
+            }, [excelData, activeMode]);
+
+            // Points with effective values (Excel overrides manual)
+            const effectivePoints = useMemo(() => {
+                return points.map(p => {
+                    const excelVal = getPointValue(p.id);
+                    return {
+                        ...p,
+                        value: excelVal !== null ? excelVal : p.value,
+                        hasExcelData: excelVal !== null,
+                        hasAnyData: pointHasData(p.id)
+                    };
+                });
+            }, [points, getPointValue, pointHasData]);
 
             // Auto-detect points from image on load
             useEffect(() => {
@@ -321,12 +461,7 @@
                         return;
                     }
 
-                    console.log('Total detected markers:', markerPositions.length);
-
-                    // Snap all positions to 10px grid
                     const snap = (v) => Math.round(v / 10) * 10;
-
-                    // Group into rows by Y proximity
                     const rows = [];
                     let curRow = [markerPositions[0]];
                     for (let i = 1; i < markerPositions.length; i++) {
@@ -339,9 +474,6 @@
                     }
                     if (curRow.length > 0) rows.push(curRow);
 
-                    console.log('Rows:', rows.map((r, i) => `Row ${i + 1}: ${r.length} pts at y≈${r[0].y}`).join(', '));
-
-                    // Check for saved point locations in localStorage
                     const saved = localStorage.getItem('acousticMapPoints');
                     let savedMap = {};
                     if (saved) {
@@ -374,13 +506,31 @@
                 });
             }, []);
 
-            // Handle Dragging - start listeners directly on pointerdown to avoid render-cycle delay
+            // Auto-load Excel on startup
+            useEffect(() => {
+                fetch('RawData.xlsx')
+                    .then(res => {
+                        if (!res.ok) throw new Error('No RawData.xlsx found');
+                        return res.arrayBuffer();
+                    })
+                    .then(buf => {
+                        const { dataByMode, warnings } = parseExcelData(buf);
+                        setExcelData({ dataByMode });
+                        if (warnings.length > 0) {
+                            setImportWarnings(warnings);
+                            setShowWarnings(true);
+                        }
+                        console.log('Excel data loaded automatically');
+                    })
+                    .catch(e => console.log('Auto-load Excel skipped:', e.message));
+            }, []);
+
             const startDrag = (e, pointId) => {
                 e.stopPropagation();
                 e.preventDefault();
                 draggingPointRef.current = pointId;
                 setDraggingPoint(pointId);
-                setSelectedPoint(points.find(p => p.id === pointId));
+                setSelectedPoint(effectivePoints.find(p => p.id === pointId));
 
                 const svg = document.querySelector('.layer-svg');
                 if (!svg) return;
@@ -412,7 +562,6 @@
                 window.addEventListener('pointerup', handlePointerUp);
             };
 
-            // Isoline color helper: maps dB to RGB based on min/max range
             const isoColorRgb = (db, minDb, maxDb) => {
                 let pct = (db - minDb) / (maxDb - minDb);
                 pct = Math.max(0, Math.min(1, pct));
@@ -427,9 +576,9 @@
                 return { r, g, b };
             };
 
-            // Heatmap rendering with ISOLINES - CLIPPED to border
+            // Heatmap rendering
             useEffect(() => {
-                if (!showHeatmap || points.length === 0) {
+                if (!showHeatmap || effectivePoints.length === 0) {
                     const ctx = canvasRef.current?.getContext('2d');
                     if (ctx) ctx.clearRect(0, 0, ROOM_W, ROOM_H);
                     return;
@@ -439,8 +588,7 @@
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-                const res = 2; // Higher resolution for smoother heatmap
-
+                const res = 2;
                 ctx.clearRect(0, 0, ROOM_W, ROOM_H);
 
                 const BORDER_LINE_W = 5;
@@ -455,21 +603,19 @@
                 ctx.clip();
 
                 const POWER = 3;
-                const validPoints = points.filter(p => p.value !== null);
+                const validPoints = effectivePoints.filter(p => p.value !== null && p.hasAnyData);
                 if (validPoints.length === 0) { ctx.restore(); return; }
 
                 let maxDb = Math.max(...validPoints.map(p => p.value));
                 let minDb = Math.min(...validPoints.map(p => p.value));
                 if (maxDb - minDb < 10) minDb = Math.max(0, maxDb - 15);
 
-                // Generate isoline levels every 2 dB
                 const isoStep = 2;
                 const isoMin = Math.floor(minDb / isoStep) * isoStep;
                 const isoMax = Math.ceil(maxDb / isoStep) * isoStep;
                 const levels = [];
                 for (let l = isoMin; l <= isoMax; l += isoStep) levels.push(l);
 
-                // Compute interpolated grid
                 const startCol = Math.floor(clipLeft / res);
                 const endCol = Math.ceil((clipLeft + clipWidth) / res);
                 const startRow = Math.floor(clipTop / res);
@@ -497,7 +643,6 @@
                     }
                 }
 
-                // Fill with smooth continuous colors (no quantization)
                 const imgData = ctx.createImageData(cols * res, rows * res);
                 for (let c = 0; c < cols; c++) {
                     for (let r = 0; r < rows; r++) {
@@ -511,16 +656,14 @@
                                 imgData.data[idx] = rC;
                                 imgData.data[idx + 1] = gC;
                                 imgData.data[idx + 2] = bC;
-                                imgData.data[idx + 3] = 179; // 0.7 opacity
+                                imgData.data[idx + 3] = 179;
                             }
                         }
                     }
                 }
                 ctx.putImageData(imgData, startCol * res, startRow * res);
 
-                // Draw contour lines using marching squares
                 for (const level of levels) {
-                    // Thicker lines for major levels (multiples of 10), thinner for minor
                     const isMajor = (level % 5 === 0);
                     ctx.strokeStyle = isMajor ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.25)';
                     ctx.lineWidth = isMajor ? 1.5 : 0.8;
@@ -576,13 +719,11 @@
                     }
                     ctx.stroke();
 
-                    // Label major isolines with dB values
                     if (isMajor) {
                         ctx.font = 'bold 9px sans-serif';
                         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
                         ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
                         ctx.lineWidth = 2.5;
-                        // Find a few points on this contour to place labels
                         let labelPlaced = 0;
                         const labelInterval = Math.floor(cols / 4);
                         for (let c = 0; c < cols - 1 && labelPlaced < 3; c++) {
@@ -605,18 +746,18 @@
                 }
 
                 ctx.restore();
-            }, [points, showHeatmap, border]);
+            }, [effectivePoints, showHeatmap, border, activeMode, activeParam]);
 
             const getNoiseColor = (db) => {
+                if (db == null) return '#94a3b8';
                 if (db < 80) return '#22c55e';
                 if (db <= 85) return '#facc15';
                 if (db <= 90) return '#f97316';
                 return '#ef4444';
             };
 
-            // Dynamic legend levels based on actual data
             const legendLevels = useMemo(() => {
-                const validPoints = points.filter(p => p.value !== null);
+                const validPoints = effectivePoints.filter(p => p.value !== null && p.hasAnyData);
                 if (validPoints.length === 0) return [];
                 let maxDb = Math.max(...validPoints.map(p => p.value));
                 let minDb = Math.min(...validPoints.map(p => p.value));
@@ -630,19 +771,16 @@
                     result.push({ value: l, color: `rgb(${r}, ${g}, ${b})` });
                 }
                 return result;
-            }, [points]);
+            }, [effectivePoints]);
 
-            // Save point locations to localStorage
             const saveLocations = () => {
                 const data = points.map(p => ({ id: p.id, x: p.x, y: p.y, value: p.value, label: p.label }));
                 localStorage.setItem('acousticMapPoints', JSON.stringify(data));
-                alert('Pozycje punktów zostały zapisane!');
+                alert('Pozycje punktow zostaly zapisane!');
             };
 
-            // Renumber all points sequentially starting from 1
             const renumberPoints = (pts) => pts.map((p, i) => ({ ...p, id: i + 1 }));
 
-            // Add a new point at the center of the visible area
             const addPoint = () => {
                 const newId = points.length + 1;
                 const cx = border.left + border.width / 2;
@@ -658,7 +796,6 @@
                 setPoints([...points, newPoint]);
             };
 
-            // Delete a point and renumber remaining
             const deletePoint = (pointId) => {
                 const updated = renumberPoints(points.filter(p => p.id !== pointId));
                 setPoints(updated);
@@ -678,9 +815,81 @@
                 }
             };
 
+            const handleExcelUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    try {
+                        const { dataByMode, warnings } = parseExcelData(evt.target.result);
+                        setExcelData({ dataByMode });
+                        if (warnings.length > 0) {
+                            setImportWarnings(warnings);
+                            setShowWarnings(true);
+                        } else {
+                            setImportWarnings([]);
+                        }
+                        console.log('Excel imported:', Object.keys(dataByMode.Z).length, 'Z points,', Object.keys(dataByMode.D).length, 'D points');
+                    } catch (err) {
+                        alert('Blad importu Excel: ' + err.message);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            // Export map to image
+            const exportMap = () => {
+                const mapEl = mapExportRef.current;
+                if (!mapEl) return;
+                html2canvas(mapEl, {
+                    backgroundColor: '#f5f5fa',
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true
+                }).then(canvas => {
+                    const link = document.createElement('a');
+                    link.download = `mapa_akustyczna_${activeMode === 'D' ? 'drukowanie' : 'zbrojenie'}_${activeParam}.png`;
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+                });
+            };
+
+            // Get param display name
+            const getParamLabel = () => {
+                if (activeParam === 'LAeq') return 'LAeq [dB]';
+                if (activeParam === 'LASmax') return 'LASmax [dB]';
+                if (activeParam === 'LCpeak') return 'LCpeak [dB]';
+                return `1/3 Oct Leq ${activeParam}`;
+            };
+
             return (
-                <div className="flex flex-col h-screen">
-                    <header className="bg-slate-900 text-white p-4 flex justify-between items-center shadow-xl shrink-0 z-20">
+                <div className="h-screen flex flex-col bg-slate-100">
+                    {/* Warning Modal */}
+                    {showWarnings && importWarnings.length > 0 && (
+                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6">
+                                <div className="flex items-center gap-3 mb-4">
+                                    <AlertTriangle className="text-amber-500" size={24} />
+                                    <h3 className="text-lg font-black uppercase">Ostrzezenia importu</h3>
+                                </div>
+                                <div className="space-y-2 max-h-60 overflow-y-auto mb-4">
+                                    {importWarnings.map((w, i) => (
+                                        <div key={i} className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                                            {w}
+                                        </div>
+                                    ))}
+                                </div>
+                                <button
+                                    onClick={() => setShowWarnings(false)}
+                                    className="w-full py-2 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-all"
+                                >
+                                    OK, rozumiem
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    <header className="bg-slate-900 text-white px-8 py-3 flex items-center justify-between shrink-0 z-30">
                         <div className="flex items-center gap-4">
                             <div>
                                 <h1 className="text-xl font-black tracking-tight uppercase leading-none">Mapa Akustyczna</h1>
@@ -688,86 +897,162 @@
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-4">
-                            <div className="flex bg-slate-800 p-1.5 rounded-xl items-center gap-3 px-4 border border-slate-700">
-                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Widoczność:</span>
-                                <button onClick={() => setShowHeatmap(!showHeatmap)} className={`p-1.5 rounded-lg transition-all flex gap-2 items-center text-[10px] font-bold uppercase ${showHeatmap ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
-                                    <Layers size={14} /> Tło Akustyczne
+                        <div className="flex items-center gap-3 flex-wrap">
+                            {/* Mode Switch */}
+                            <div className="flex bg-slate-800 p-1 rounded-xl items-center gap-1 border border-slate-700">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 px-2">Tryb:</span>
+                                <button
+                                    onClick={() => setActiveMode('D')}
+                                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${activeMode === 'D' ? 'bg-orange-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                >
+                                    Drukowanie
                                 </button>
-                                <button onClick={() => setShowPoints(!showPoints)} className={`p-1.5 rounded-lg transition-all flex gap-2 items-center text-[10px] font-bold uppercase ${showPoints ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
-                                    {showPoints ? <Eye size={14} /> : <EyeOff size={14} />} Punkty
+                                <button
+                                    onClick={() => setActiveMode('Z')}
+                                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${activeMode === 'Z' ? 'bg-cyan-500 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                >
+                                    Zbrojenie
                                 </button>
                             </div>
 
-                            <div className="flex bg-slate-800 p-1.5 rounded-xl items-center gap-3 px-4 border border-slate-700">
-                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Podkład:</span>
+                            {/* Parameter Selector */}
+                            <div className="flex bg-slate-800 p-1 rounded-xl items-center gap-1 border border-slate-700 relative">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-400 px-2">Parametr:</span>
+                                <button
+                                    onClick={() => { setActiveParam('LAeq'); setShowOctaveDropdown(false); }}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LAeq' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                >
+                                    LAeq
+                                </button>
+                                <button
+                                    onClick={() => { setActiveParam('LASmax'); setShowOctaveDropdown(false); }}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LASmax' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                >
+                                    LASmax
+                                </button>
+                                <button
+                                    onClick={() => { setActiveParam('LCpeak'); setShowOctaveDropdown(false); }}
+                                    className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LCpeak' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                >
+                                    LCpeak
+                                </button>
+                                <div className="relative">
+                                    <button
+                                        onClick={() => setShowOctaveDropdown(!showOctaveDropdown)}
+                                        className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${OCTAVE_BANDS.includes(activeParam) ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                                    >
+                                        {OCTAVE_BANDS.includes(activeParam) ? activeParam : '1/3 Oct'} ▾
+                                    </button>
+                                    {showOctaveDropdown && (
+                                        <div className="absolute top-full mt-1 right-0 bg-slate-800 border border-slate-600 rounded-xl shadow-2xl z-50 octave-dropdown w-40">
+                                            {OCTAVE_BANDS.map(freq => (
+                                                <button
+                                                    key={freq}
+                                                    onClick={() => { setActiveParam(freq); setShowOctaveDropdown(false); }}
+                                                    className={`block w-full text-left px-3 py-1.5 text-[11px] font-bold transition-all hover:bg-slate-700 ${activeParam === freq ? 'bg-purple-600 text-white' : 'text-slate-300'}`}
+                                                >
+                                                    {freq}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Visibility */}
+                            <div className="flex bg-slate-800 p-1 rounded-xl items-center gap-1 border border-slate-700">
+                                <button onClick={() => setShowHeatmap(!showHeatmap)} className={`p-1.5 rounded-lg transition-all flex gap-1 items-center text-[10px] font-bold uppercase ${showHeatmap ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                                    <Layers size={12} /> Mapa
+                                </button>
+                                <button onClick={() => setShowPoints(!showPoints)} className={`p-1.5 rounded-lg transition-all flex gap-1 items-center text-[10px] font-bold uppercase ${showPoints ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                                    {showPoints ? <Eye size={12} /> : <EyeOff size={12} />} Pkt
+                                </button>
+                                <button onClick={() => setShowMachines(!showMachines)} className={`p-1.5 rounded-lg transition-all ${showMachines ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`} title="Maszyny">
+                                    <Layers size={12} />
+                                </button>
+                            </div>
+
+                            {/* Background */}
+                            <div className="flex bg-slate-800 p-1 rounded-xl items-center gap-1 border border-slate-700">
                                 <input type="file" ref={fileInputRef} onChange={handleImageUpload} accept="image/*" className="hidden" />
                                 <button onClick={() => fileInputRef.current.click()} className="p-1.5 rounded-lg bg-slate-700 text-slate-200 hover:bg-slate-600 text-[9px] font-black uppercase">
-                                    Plik
+                                    Podklad
                                 </button>
-                                <div className="flex items-center gap-2 max-w-[100px]">
-                                    <input type="range" min="0" max="1" step="0.1" value={imageOpacity} onChange={(e) => setImageOpacity(e.target.value)} className="w-full accent-blue-500" />
-                                </div>
-                                <button
-                                    onClick={() => setShowImage(!showImage)}
-                                    className={`p-1.5 rounded-lg transition-all ${showImage ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}
-                                    title="Pokaż podkład"
-                                >
-                                    {showImage ? <Eye size={14} /> : <EyeOff size={14} />}
-                                </button>
-                                <button
-                                    onClick={() => setShowMachines(!showMachines)}
-                                    className={`p-1.5 rounded-lg transition-all ${showMachines ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`}
-                                    title="Pokaż maszyny"
-                                >
-                                    {showMachines ? <Layers size={14} /> : <Layers size={14} />}
+                                <input type="range" min="0" max="1" step="0.1" value={imageOpacity} onChange={(e) => setImageOpacity(e.target.value)} className="w-16 accent-blue-500" />
+                                <button onClick={() => setShowImage(!showImage)} className={`p-1.5 rounded-lg transition-all ${showImage ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                                    {showImage ? <Eye size={12} /> : <EyeOff size={12} />}
                                 </button>
                             </div>
 
                             <button
                                 onClick={() => setShowDbValues(!showDbValues)}
-                                className={`flex flex-col items-center justify-center p-2 rounded-xl transition-all border ${showDbValues ? 'bg-orange-500/20 text-orange-400 border-orange-500/50' : 'bg-blue-500/20 text-blue-400 border-blue-500/50'
-                                    }`}
-                                title="Przełącz wyświetlanie: ID punktu vs Wartość dB"
+                                className={`flex flex-col items-center justify-center p-1.5 rounded-xl transition-all border text-[9px] font-black uppercase ${showDbValues ? 'bg-orange-500/20 text-orange-400 border-orange-500/50' : 'bg-blue-500/20 text-blue-400 border-blue-500/50'}`}
                             >
-                                <span className="text-[9px] font-black uppercase leading-none mb-1">Etykiety</span>
-                                {showDbValues ? <span className="text-xs font-black uppercase leading-none">Wartości dB</span> : <span className="text-xs font-black uppercase leading-none">Numery ID</span>}
+                                {showDbValues ? 'dB' : 'ID'}
                             </button>
 
+                            {/* Excel Import */}
+                            <input type="file" ref={excelInputRef} onChange={handleExcelUpload} accept=".xlsx,.xls" className="hidden" />
                             <button
-                                onClick={saveLocations}
-                                className="flex flex-col items-center justify-center p-2 rounded-xl transition-all border bg-green-500/20 text-green-400 border-green-500/50 hover:bg-green-500/30"
-                                title="Zapisz pozycje punktów"
+                                onClick={() => excelInputRef.current.click()}
+                                className="flex items-center gap-1 p-1.5 rounded-xl transition-all border bg-emerald-500/20 text-emerald-400 border-emerald-500/50 hover:bg-emerald-500/30 text-[9px] font-black uppercase"
+                                title="Import Excel"
                             >
-                                <Save size={16} />
-                                <span className="text-[9px] font-black uppercase leading-none mt-1">Zapisz</span>
+                                <Upload size={12} /> Excel
                             </button>
+
+                            {/* Export Map */}
+                            <button
+                                onClick={exportMap}
+                                className="flex items-center gap-1 p-1.5 rounded-xl transition-all border bg-violet-500/20 text-violet-400 border-violet-500/50 hover:bg-violet-500/30 text-[9px] font-black uppercase"
+                                title="Eksport mapy do obrazka"
+                            >
+                                <Download size={12} /> Eksport
+                            </button>
+
+                            <button onClick={saveLocations} className="p-1.5 rounded-xl transition-all border bg-green-500/20 text-green-400 border-green-500/50 hover:bg-green-500/30" title="Zapisz">
+                                <Save size={14} />
+                            </button>
+
+                            {/* Warning indicator */}
+                            {importWarnings.length > 0 && (
+                                <button
+                                    onClick={() => setShowWarnings(true)}
+                                    className="p-1.5 rounded-xl border bg-amber-500/20 text-amber-400 border-amber-500/50 hover:bg-amber-500/30 relative"
+                                    title="Ostrzezenia importu"
+                                >
+                                    <AlertTriangle size={14} />
+                                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-500 text-white text-[8px] font-black rounded-full flex items-center justify-center">{importWarnings.length}</span>
+                                </button>
+                            )}
                         </div>
                     </header>
 
                     <div className="flex flex-1 overflow-hidden">
-                        <div className="flex-1 bg-slate-200/50 p-6 flex flex-col relative w-full h-full">
-                            <div className="map-wrapper w-full flex-1">
+                        <div className="flex-1 bg-slate-200/50 p-4 flex flex-col relative w-full h-full" ref={mapExportRef}>
+                            {/* Current param/mode indicator */}
+                            <div className="absolute top-6 left-6 z-10 bg-white/90 backdrop-blur rounded-xl px-4 py-2 shadow-lg border border-slate-200">
+                                <div className="text-[10px] font-black uppercase text-slate-500">
+                                    {activeMode === 'D' ? 'Drukowanie' : 'Zbrojenie'} / {getParamLabel()}
+                                </div>
+                            </div>
 
-                                {/* Blueprint Layer - Prezentacja2.jpg as default background */}
+                            <div className="map-wrapper w-full flex-1">
                                 {showImage && imageSrc && (
-                                    <img src={imageSrc} className="layer-blueprint" style={{ opacity: imageOpacity }} alt="Blueprint" />
+                                    <img src={imageSrc} className="layer-blueprint" style={{ opacity: imageOpacity }} alt="Blueprint" crossOrigin="anonymous" />
                                 )}
 
-                                {/* Heatmap Layer */}
                                 <canvas ref={canvasRef} className="layer-heatmap" width={ROOM_W} height={ROOM_H} style={{ display: showHeatmap ? 'block' : 'none' }}></canvas>
 
-                                {/* SVG Layer - Points and machine drawings */}
                                 <svg
                                     viewBox={`0 0 ${ROOM_W} ${ROOM_H}`}
                                     className="layer-svg"
                                     preserveAspectRatio="xMidYMid meet"
                                 >
-                                    {/* Machines Layer */}
                                     {showMachines && (
                                         <g transform={`translate(${layoutOffset.x}, ${layoutOffset.y}) scale(${layoutOffset.scale})`}>
-                                            {PRINTING_UNITS.map(unit => (
-                                                <g key={unit.id}>
+                                            {PRINTING_UNITS.map((unit, idx) => (
+                                                <g key={`${unit.line}${unit.id}_${idx}`}>
                                                     <rect
                                                         x={unit.x} y={unit.y} width={unit.width} height={unit.height}
                                                         fill="rgba(255, 255, 255, 0.15)"
@@ -788,37 +1073,41 @@
                                         </g>
                                     )}
 
-                                    {/* Points */}
-                                    {showPoints && points.map(point => (
-                                        <g
-                                            key={point.id}
-                                            className={`measurement-point cursor-move group`}
-                                            style={draggingPoint === point.id ? { opacity: 0.5 } : {}}
-                                            onPointerDown={(e) => startDrag(e, point.id)}
-                                            transform={`translate(${point.x},${point.y})`}
-                                        >
-                                            <circle
-                                                className="point-bg" r="16" fill="rgba(0,0,0,0.5)"
-                                            />
-                                            <circle
-                                                className="point-circle" r="14"
-                                                fill={getNoiseColor(point.value)} stroke="white" strokeWidth="2"
-                                            />
-                                            <text
-                                                y={4} textAnchor="middle" dominantBaseline="middle"
-                                                fontSize="12" fontWeight="900" fill="#1e293b"
-                                                style={{ paintOrder: 'stroke', stroke: 'white', strokeWidth: '2px' }}
+                                    {showPoints && effectivePoints.map(point => {
+                                        const hasData = point.hasAnyData;
+                                        return (
+                                            <g
+                                                key={point.id}
+                                                className={`measurement-point cursor-move group ${!hasData ? 'no-data-point' : ''}`}
+                                                style={draggingPoint === point.id ? { opacity: 0.5 } : {}}
+                                                onPointerDown={(e) => startDrag(e, point.id)}
+                                                transform={`translate(${point.x},${point.y})`}
                                             >
-                                                {showDbValues ? point.value : point.id}
-                                            </text>
-                                        </g>
-                                    ))}
+                                                <circle className="point-bg" r="16" fill={hasData ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.2)"} />
+                                                <circle
+                                                    className="point-circle" r="14"
+                                                    fill={hasData ? getNoiseColor(point.value) : '#94a3b8'}
+                                                    stroke={hasData ? "white" : "#cbd5e1"}
+                                                    strokeWidth="2"
+                                                    strokeDasharray={hasData ? "none" : "3,2"}
+                                                />
+                                                <text
+                                                    y={4} textAnchor="middle" dominantBaseline="middle"
+                                                    fontSize="11" fontWeight="900"
+                                                    fill={hasData ? "#1e293b" : "#94a3b8"}
+                                                    style={{ paintOrder: 'stroke', stroke: hasData ? 'white' : '#e2e8f0', strokeWidth: '2px' }}
+                                                >
+                                                    {showDbValues && point.value != null ? Math.round(point.value) : point.id}
+                                                </text>
+                                            </g>
+                                        );
+                                    })}
                                 </svg>
                             </div>
 
                             {/* Legend */}
-                            <div className="mt-4 flex flex-wrap gap-1 justify-center shrink-0 items-center">
-                                <span className="text-[9px] font-black text-slate-500 uppercase mr-2">dB(A):</span>
+                            <div className="mt-3 flex flex-wrap gap-1 justify-center shrink-0 items-center">
+                                <span className="text-[9px] font-black text-slate-500 uppercase mr-2">{getParamLabel()}:</span>
                                 {legendLevels.map(item => (
                                     <div key={item.value} className="flex flex-col items-center gap-0.5 px-1">
                                         <div className="w-6 h-4 rounded-sm border border-slate-200" style={{ backgroundColor: item.color }}></div>
@@ -826,99 +1115,150 @@
                                     </div>
                                 ))}
                             </div>
-                            <div className="text-center mt-2">
-                                <span className="text-[9px] text-slate-400">© CIOP-PIB 2026</span>
+                            <div className="text-center mt-1">
+                                <span className="text-[9px] text-slate-400">&copy; CIOP-PIB 2026</span>
                             </div>
                         </div>
 
+                        {/* Sidebar Toggle Button */}
+                        <button
+                            onClick={() => setSidebarOpen(!sidebarOpen)}
+                            className="w-6 bg-slate-200 hover:bg-slate-300 border-l border-slate-300 flex items-center justify-center transition-all z-20 shrink-0"
+                            title={sidebarOpen ? 'Ukryj panel' : 'Pokaz panel'}
+                        >
+                            {sidebarOpen ? <ChevronRight size={14} className="text-slate-500" /> : <ChevronLeft size={14} className="text-slate-500" />}
+                        </button>
+
                         {/* Sidebar */}
-                        <aside className="w-[400px] bg-white border-l border-slate-200 shadow-2xl flex flex-col z-20 shrink-0">
-                            <div className="p-8 bg-slate-900 text-white flex items-center justify-between">
+                        <aside className={`sidebar-enter bg-white border-l border-slate-200 shadow-2xl flex flex-col z-20 shrink-0 overflow-hidden ${sidebarOpen ? 'w-[380px]' : 'w-0'}`}>
+                            <div className="p-6 bg-slate-900 text-white flex items-center justify-between shrink-0">
                                 <div className="flex items-center gap-2 font-black uppercase tracking-widest text-[10px]">
                                     <Database size={16} className="text-blue-400" />
-                                    Wyniki Pomiarów
+                                    Wyniki Pomiarow
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button onClick={addPoint} className="bg-green-600 hover:bg-green-500 px-2 py-1 rounded-lg text-xs font-black flex items-center gap-1 transition-all" title="Dodaj punkt">
                                         <Plus size={12} /> Dodaj
                                     </button>
-                                    <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-black">{points.length} Punktów</span>
+                                    <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-black">{points.length}</span>
                                 </div>
                             </div>
 
-                            {selectedPoint && (
-                                <div className="m-6 p-6 bg-slate-900 text-white rounded-[2rem] shadow-2xl border border-slate-700">
-                                    <div className="flex justify-between items-start mb-4">
-                                        <div>
-                                            <h3 className="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-1">Szczegóły punktu</h3>
-                                            <p className="text-xl font-black tracking-tight cursor-default">Punkt #{selectedPoint.id}</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 mb-4 text-center">
-                                        <p className="text-[9px] text-slate-500 uppercase font-black mb-1">Obecna wartość</p>
-                                        <p className="text-5xl font-black" style={{ color: getNoiseColor(selectedPoint.value) }}>{Number(selectedPoint.value).toFixed(1)}</p>
-                                        <p className="text-[9px] text-slate-400 mt-1 font-bold uppercase tracking-widest">dB(A)</p>
-                                    </div>
-
-                                    <div>
-                                        <div className="flex items-center gap-3 mb-2">
-                                            <input
-                                                type="number" min="30" max="130" step="0.1"
-                                                value={selectedPoint.value}
-                                                onChange={(e) => {
-                                                    const v = parseFloat(e.target.value);
-                                                    if (!isNaN(v)) {
-                                                        setPoints(points.map(p => p.id === selectedPoint.id ? { ...p, value: v } : p));
-                                                        setSelectedPoint({ ...selectedPoint, value: v });
-                                                    }
-                                                }}
-                                                className="w-24 px-3 py-2 text-lg font-black text-center bg-slate-700 text-white border border-slate-600 rounded-xl focus:outline-none focus:border-blue-500"
-                                            />
-                                            <span className="text-[9px] text-slate-400 uppercase font-bold">dB(A)</span>
-                                        </div>
-                                        <input
-                                            type="range" min="30" max="130" step="0.1" value={selectedPoint.value}
-                                            onChange={(e) => {
-                                                const v = parseFloat(e.target.value);
-                                                setPoints(points.map(p => p.id === selectedPoint.id ? { ...p, value: v } : p));
-                                                setSelectedPoint({ ...selectedPoint, value: v });
-                                            }}
-                                            className="w-full h-4 bg-slate-100 rounded-full appearance-none cursor-pointer accent-blue-600 mb-2"
-                                        />
-                                        <p className="text-[9px] text-slate-400 uppercase text-center">Przesuń suwak lub wpisz wartość z klawiatury</p>
-                                    </div>
+                            {/* Excel data info */}
+                            {excelData && (
+                                <div className="mx-4 mt-3 p-3 bg-slate-50 rounded-xl border border-slate-200 shrink-0">
+                                    <p className="text-[9px] font-black uppercase text-slate-500 mb-1">Dane z Excel ({activeMode === 'D' ? 'Drukowanie' : 'Zbrojenie'})</p>
+                                    <p className="text-xs font-bold text-slate-700">
+                                        {Object.keys(excelData.dataByMode[activeMode] || {}).length} punktow z danymi
+                                    </p>
                                 </div>
                             )}
 
-                            <div className="flex-1 overflow-auto p-6 space-y-3 bg-slate-50/50">
-                                <h4 className="text-[10px] font-black uppercase text-slate-400 mb-4 tracking-widest">Przegląd wszystkich danych</h4>
-                                {points.map(p => (
+                            {selectedPoint && (() => {
+                                const ep = effectivePoints.find(p => p.id === selectedPoint.id);
+                                if (!ep) return null;
+                                return (
+                                    <div className="m-4 p-4 bg-slate-900 text-white rounded-2xl shadow-2xl border border-slate-700 shrink-0">
+                                        <div className="flex justify-between items-start mb-3">
+                                            <div>
+                                                <h3 className="text-[9px] font-black text-blue-400 uppercase tracking-widest mb-1">Punkt #{ep.id}</h3>
+                                                {!ep.hasAnyData && <span className="text-[9px] text-amber-400 font-bold">Brak danych w tym trybie</span>}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-slate-800 p-3 rounded-xl border border-slate-700 mb-3 text-center">
+                                            <p className="text-[9px] text-slate-500 uppercase font-black mb-1">{getParamLabel()}</p>
+                                            <p className="text-4xl font-black" style={{ color: getNoiseColor(ep.value) }}>
+                                                {ep.value != null ? Number(ep.value).toFixed(1) : '---'}
+                                            </p>
+                                        </div>
+
+                                        {/* Show all params for this point if excel data exists */}
+                                        {ep.hasExcelData && excelData && (() => {
+                                            const m = excelData.dataByMode[activeMode]?.[ep.id];
+                                            if (!m) return null;
+                                            return (
+                                                <div className="grid grid-cols-3 gap-2 mb-3">
+                                                    <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LAeq' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LAeq')}>
+                                                        <p className="text-[8px] text-slate-400 font-bold">LAeq</p>
+                                                        <p className="text-sm font-black">{m.LAeq ?? '---'}</p>
+                                                    </div>
+                                                    <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LASmax' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LASmax')}>
+                                                        <p className="text-[8px] text-slate-400 font-bold">LASmax</p>
+                                                        <p className="text-sm font-black">{m.LASmax ?? '---'}</p>
+                                                    </div>
+                                                    <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LCpeak' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LCpeak')}>
+                                                        <p className="text-[8px] text-slate-400 font-bold">LCpeak</p>
+                                                        <p className="text-sm font-black">{m.LCpeak ?? '---'}</p>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })()}
+
+                                        {!ep.hasExcelData && (
+                                            <div>
+                                                <div className="flex items-center gap-3 mb-2">
+                                                    <input
+                                                        type="number" min="30" max="130" step="0.1"
+                                                        value={ep.value || 80}
+                                                        onChange={(e) => {
+                                                            const v = parseFloat(e.target.value);
+                                                            if (!isNaN(v)) {
+                                                                setPoints(points.map(p => p.id === ep.id ? { ...p, value: v } : p));
+                                                                setSelectedPoint({ ...selectedPoint, value: v });
+                                                            }
+                                                        }}
+                                                        className="w-24 px-3 py-2 text-lg font-black text-center bg-slate-700 text-white border border-slate-600 rounded-xl focus:outline-none focus:border-blue-500"
+                                                    />
+                                                    <span className="text-[9px] text-slate-400 uppercase font-bold">dB(A)</span>
+                                                </div>
+                                                <input
+                                                    type="range" min="30" max="130" step="0.1" value={ep.value || 80}
+                                                    onChange={(e) => {
+                                                        const v = parseFloat(e.target.value);
+                                                        setPoints(points.map(p => p.id === ep.id ? { ...p, value: v } : p));
+                                                        setSelectedPoint({ ...selectedPoint, value: v });
+                                                    }}
+                                                    className="w-full h-4 bg-slate-100 rounded-full appearance-none cursor-pointer accent-blue-600"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+
+                            <div className="flex-1 overflow-auto p-4 space-y-2 bg-slate-50/50">
+                                <h4 className="text-[10px] font-black uppercase text-slate-400 mb-3 tracking-widest">Wszystkie punkty</h4>
+                                {effectivePoints.map(p => (
                                     <div
                                         key={p.id} onClick={() => setSelectedPoint(p)}
-                                        className={`p-3 rounded-xl border-2 transition-all cursor-pointer flex justify-between items-center ${selectedPoint?.id === p.id ? 'border-blue-500 bg-white shadow-md scale-[1.02]' : 'border-transparent bg-white shadow-sm'
-                                            }`}
+                                        className={`p-2.5 rounded-xl border-2 transition-all cursor-pointer flex justify-between items-center ${
+                                            selectedPoint?.id === p.id ? 'border-blue-500 bg-white shadow-md scale-[1.02]' : 'border-transparent bg-white shadow-sm'
+                                        } ${!p.hasAnyData ? 'opacity-50' : ''}`}
                                     >
-                                        <div className="flex items-center gap-3">
-                                            <span className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-white" style={{ backgroundColor: getNoiseColor(p.value) }}>
+                                        <div className="flex items-center gap-2">
+                                            <span className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-black text-white ${!p.hasAnyData ? 'grayscale' : ''}`}
+                                                style={{ backgroundColor: p.hasAnyData ? getNoiseColor(p.value) : '#94a3b8' }}>
                                                 {p.id}
                                             </span>
                                             <span className="font-bold text-slate-600 text-[10px] uppercase">Pkt {p.id}</span>
                                         </div>
                                         <div className="flex items-center gap-2">
-                                            <span className="text-xl font-black tracking-tighter" style={{ color: getNoiseColor(p.value) }}>{Number(p.value).toFixed(1)} <small className="text-[10px] opacity-50 font-bold">dB</small></span>
+                                            <span className="text-lg font-black tracking-tighter" style={{ color: p.hasAnyData ? getNoiseColor(p.value) : '#94a3b8' }}>
+                                                {p.value != null ? Number(p.value).toFixed(1) : '---'}
+                                                <small className="text-[9px] opacity-50 font-bold ml-1">dB</small>
+                                            </span>
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); deletePoint(p.id); }}
                                                 className="p-1 rounded-lg bg-red-100 text-red-500 hover:bg-red-200 transition-all"
-                                                title="Usuń punkt"
+                                                title="Usun punkt"
                                             >
-                                                <Trash2 size={14} />
+                                                <Trash2 size={12} />
                                             </button>
                                         </div>
                                     </div>
                                 ))}
                             </div>
-
                         </aside>
                     </div>
                 </div>
