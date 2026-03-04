@@ -68,6 +68,7 @@
         .layer-svg {
             z-index: 3;
             pointer-events: auto;
+            touch-action: none;
         }
 
         .point-circle {
@@ -289,6 +290,7 @@
             const [points, setPoints] = useState([]);
             const [selectedPoint, setSelectedPoint] = useState(null);
             const [draggingPoint, setDraggingPoint] = useState(null);
+            const draggingPointRef = useRef(null);
 
             // Toggles
             const [showImage, setShowImage] = useState(true);
@@ -360,18 +362,22 @@
                 });
             }, []);
 
-            // Handle Dragging Globally
-            useEffect(() => {
-                const handlePointerMove = (e) => {
-                    if (draggingPoint === null) return;
+            // Handle Dragging - start listeners directly on pointerdown to avoid render-cycle delay
+            const startDrag = (e, pointId) => {
+                e.stopPropagation();
+                e.preventDefault();
+                draggingPointRef.current = pointId;
+                setDraggingPoint(pointId);
+                setSelectedPoint(points.find(p => p.id === pointId));
 
-                    const svg = document.querySelector('.layer-svg');
-                    if (!svg) return;
+                const svg = document.querySelector('.layer-svg');
+                if (!svg) return;
 
-                    // Use SVG's built-in coordinate transformation for accurate mapping
+                const handlePointerMove = (ev) => {
+                    if (draggingPointRef.current === null) return;
                     const pt = svg.createSVGPoint();
-                    pt.x = e.clientX;
-                    pt.y = e.clientY;
+                    pt.x = ev.clientX;
+                    pt.y = ev.clientY;
                     const ctm = svg.getScreenCTM();
                     if (!ctm) return;
                     const svgPt = pt.matrixTransform(ctm.inverse());
@@ -380,23 +386,19 @@
                     const snapX = Math.round(svgPt.x / GRID_SNAP) * GRID_SNAP;
                     const snapY = Math.round(svgPt.y / GRID_SNAP) * GRID_SNAP;
 
-                    setPoints(prev => prev.map(p => p.id === draggingPoint ? { ...p, x: snapX, y: snapY } : p));
+                    setPoints(prev => prev.map(p => p.id === draggingPointRef.current ? { ...p, x: snapX, y: snapY } : p));
                 };
 
                 const handlePointerUp = () => {
-                    if (draggingPoint !== null) setDraggingPoint(null);
-                };
-
-                if (draggingPoint !== null) {
-                    window.addEventListener('pointermove', handlePointerMove);
-                    window.addEventListener('pointerup', handlePointerUp);
-                }
-
-                return () => {
+                    draggingPointRef.current = null;
+                    setDraggingPoint(null);
                     window.removeEventListener('pointermove', handlePointerMove);
                     window.removeEventListener('pointerup', handlePointerUp);
                 };
-            }, [draggingPoint]);
+
+                window.addEventListener('pointermove', handlePointerMove);
+                window.addEventListener('pointerup', handlePointerUp);
+            };
 
             // Heatmap rendering - CLIPPED to border
             useEffect(() => {
@@ -414,14 +416,17 @@
 
                 ctx.clearRect(0, 0, ROOM_W, ROOM_H);
 
-                // Clip to border rectangle
+                // Clip to INNER edge of border rectangle (inset past the border line)
+                const BORDER_LINE_W = 5;
+                const clipLeft = border.left + BORDER_LINE_W;
+                const clipTop = border.top + BORDER_LINE_W;
+                const clipWidth = border.width - 2 * BORDER_LINE_W;
+                const clipHeight = border.height - 2 * BORDER_LINE_W;
+
                 ctx.save();
                 ctx.beginPath();
-                ctx.rect(border.left, border.top, border.width, border.height);
+                ctx.rect(clipLeft, clipTop, clipWidth, clipHeight);
                 ctx.clip();
-                ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
-                ctx.lineWidth = 4;
-                ctx.stroke();
 
                 const POWER = 3;
                 const validPoints = points.filter(p => p.value !== null);
@@ -433,11 +438,11 @@
 
                 if (maxDb - minDb < 10) minDb = Math.max(0, maxDb - 15);
 
-                // Only render within border bounds
-                const startCol = Math.floor(border.left / res);
-                const endCol = Math.ceil((border.left + border.width) / res);
-                const startRow = Math.floor(border.top / res);
-                const endRow = Math.ceil((border.top + border.height) / res);
+                // Only render within clipped border bounds
+                const startCol = Math.floor(clipLeft / res);
+                const endCol = Math.ceil((clipLeft + clipWidth) / res);
+                const startRow = Math.floor(clipTop / res);
+                const endRow = Math.ceil((clipTop + clipHeight) / res);
 
                 for (let c = startCol; c < endCol; c++) {
                     for (let r = startRow; r < endRow; r++) {
@@ -598,12 +603,9 @@
                                     {showPoints && points.map(point => (
                                         <g
                                             key={point.id}
-                                            className={`measurement-point cursor-move group ${draggingPoint === point.id ? 'opacity-50 scale-110' : ''}`}
-                                            onPointerDown={(e) => {
-                                                e.stopPropagation();
-                                                setDraggingPoint(point.id);
-                                                setSelectedPoint(point);
-                                            }}
+                                            className={`measurement-point cursor-move group`}
+                                            style={draggingPoint === point.id ? { opacity: 0.5 } : {}}
+                                            onPointerDown={(e) => startDrag(e, point.id)}
                                             transform={`translate(${point.x},${point.y})`}
                                         >
                                             <circle
