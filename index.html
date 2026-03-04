@@ -368,32 +368,17 @@
                     const svg = document.querySelector('.layer-svg');
                     if (!svg) return;
 
-                    const rect = svg.getBoundingClientRect();
-                    const imgRatio = 1280 / 720;
-                    const rectRatio = rect.width / rect.height;
-
-                    let drawWidth = rect.width;
-                    let drawHeight = rect.height;
-                    let offsetX = 0;
-                    let offsetY = 0;
-
-                    if (imgRatio > rectRatio) {
-                        drawHeight = rect.width / imgRatio;
-                        offsetY = (rect.height - drawHeight) / 2;
-                    } else {
-                        drawWidth = rect.height * imgRatio;
-                        offsetX = (rect.width - drawWidth) / 2;
-                    }
-
-                    const actualX = e.clientX - rect.left - offsetX;
-                    const actualY = e.clientY - rect.top - offsetY;
-
-                    let svgX = actualX * (1280 / drawWidth);
-                    let svgY = actualY * (720 / drawHeight);
+                    // Use SVG's built-in coordinate transformation for accurate mapping
+                    const pt = svg.createSVGPoint();
+                    pt.x = e.clientX;
+                    pt.y = e.clientY;
+                    const ctm = svg.getScreenCTM();
+                    if (!ctm) return;
+                    const svgPt = pt.matrixTransform(ctm.inverse());
 
                     const GRID_SNAP = 10;
-                    const snapX = Math.round(svgX / GRID_SNAP) * GRID_SNAP;
-                    const snapY = Math.round(svgY / GRID_SNAP) * GRID_SNAP;
+                    const snapX = Math.round(svgPt.x / GRID_SNAP) * GRID_SNAP;
+                    const snapY = Math.round(svgPt.y / GRID_SNAP) * GRID_SNAP;
 
                     setPoints(prev => prev.map(p => p.id === draggingPoint ? { ...p, x: snapX, y: snapY } : p));
                 };
