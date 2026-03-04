@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Detect Markers</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: monospace;
+            background: #111;
+            color: #0f0
+        }
+
+        #output {
+            padding: 20px;
+            white-space: pre;
+            font-size: 13px
+        }
+
+        canvas {
+            display: block;
+            margin: 10px;
+            border: 1px solid #333
+        }
+    </style>
+</head>
+
+<body>
+    <div id="output">Analyzing Prezentacja2.jpg...</div>
+    <canvas id="debug"></canvas>
+    <script>
+        const img = new Image();
+        img.onload = function () {
+            const W = img.width, H = img.height;
+            const canvas = document.createElement('canvas');
+            canvas.width = W; canvas.height = H;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, W, H);
+            const d = imageData.data;
+
+            // Create binary image: dark pixels that are NOT strongly red or blue
+            const binary = new Uint8Array(W * H);
+            for (let i = 0; i < W * H; i++) {
+                const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+                const gray = (r + g + b) / 3;
+                const isReddish = r > 120 && g < 80 && b < 80;
+                const isBluish = b > 120 && r < 80;
+                const isCyanish = b > 120 && g > 120 && r < 80;
+                if (gray < 90 && !isReddish && !isBluish && !isCyanish) {
+                    binary[i] = 1;
+                }
+            }
+
+            // Connected component analysis with 8-connectivity
+            const labels = new Int32Array(W * H);
+            let nextLabel = 1;
+            const components = [];
+            const dirs = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const idx = y * W + x;
+                    if (binary[idx] === 1 && labels[idx] === 0) {
+                        const queue = [[x, y]];
+                        let minX = x, maxX = x, minY = y, maxY = y;
+                        let count = 0;
+                        labels[idx] = nextLabel;
+
+                        while (queue.length > 0) {
+                            const [cx, cy] = queue.shift();
+                            count++;
+                            minX = Math.min(minX, cx);
+                            maxX = Math.max(maxX, cx);
+                            minY = Math.min(minY, cy);
+                            maxY = Math.max(maxY, cy);
+
+                            for (const [dy, dx] of dirs) {
+                                const nx = cx + dx, ny = cy + dy;
+                                if (nx >= 0 && nx < W && ny >= 0 && ny < H) {
+                                    const ni = ny * W + nx;
+                                    if (binary[ni] === 1 && labels[ni] === 0) {
+                                        labels[ni] = nextLabel;
+                                        queue.push([nx, ny]);
+                                    }
+                                }
+                            }
+                        }
+
+                        components.push({
+                            label: nextLabel,
+                            count, minX, maxX, minY, maxY,
+                            bw: maxX - minX + 1,
+                            bh: maxY - minY + 1,
+                            cx: Math.round((minX + maxX) / 2),
+                            cy: Math.round((minY + maxY) / 2)
+                        });
+                        nextLabel++;
+                    }
+                }
+            }
+
+            // Filter for ⊗-shaped markers:
+            // Bounding box ~15-35px, roughly square, reasonable pixel count
+            const markers = components.filter(c => {
+                return c.bw >= 14 && c.bw <= 38 &&
+                    c.bh >= 14 && c.bh <= 38 &&
+                    c.bw / c.bh >= 0.5 && c.bw / c.bh <= 2.0 &&
+                    c.count >= 40 && c.count <= 400;
+            });
+
+            // Sort by y then x
+            markers.sort((a, b) => {
+                const yDiff = a.cy - b.cy;
+                if (Math.abs(yDiff) > 20) return yDiff;
+                return a.cx - b.cx;
+            });
+
+            // Draw debug visualization
+            const dbg = document.getElementById('debug');
+            dbg.width = W; dbg.height = H;
+            const dctx = dbg.getContext('2d');
+            dctx.drawImage(img, 0, 0);
+
+            markers.forEach((m, i) => {
+                dctx.strokeStyle = '#00ff00';
+                dctx.lineWidth = 2;
+                dctx.strokeRect(m.minX - 2, m.minY - 2, m.bw + 4, m.bh + 4);
+                dctx.fillStyle = '#00ff00';
+                dctx.font = 'bold 11px monospace';
+                dctx.fillText(i + 1, m.cx - 5, m.minY - 5);
+            });
+
+            let text = `Image: ${W}x${H}\n`;
+            text += `Total dark components: ${components.length}\n`;
+            text += `Filtered markers (⊗): ${markers.length}\n\n`;
+
+            // Group by approximate Y rows
+            const rows = [];
+            let currentRow = [markers[0]];
+            for (let i = 1; i < markers.length; i++) {
+                if (markers[i].cy - currentRow[0].cy > 30) {
+                    rows.push(currentRow);
+                    currentRow = [markers[i]];
+                } else {
+                    currentRow.push(markers[i]);
+                }
+            }
+            if (currentRow.length > 0) rows.push(currentRow);
+
+            text += `Rows detected: ${rows.length}\n\n`;
+
+            let pointNum = 1;
+            rows.forEach((row, ri) => {
+                text += `--- Row ${ri + 1} (y≈${row[0].cy}) ---  ${row.length} points\n`;
+                row.forEach(m => {
+                    text += `  #${pointNum}: (${m.cx}, ${m.cy}) [${m.bw}x${m.bh}, ${m.count}px]\n`;
+                    pointNum++;
+                });
+                text += '\n';
+            });
+
+            text += '\n// Copy-paste JS array:\nconst POINT_POSITIONS = [\n';
+            markers.forEach((m, i) => {
+                text += `  {x: ${m.cx}, y: ${m.cy}},  // ${i + 1}\n`;
+            });
+            text += '];\n';
+
+            document.getElementById('output').textContent = text;
+        };
+        img.src = 'Prezentacja2.jpg';
+    </script>
+</body>
+
+</html>

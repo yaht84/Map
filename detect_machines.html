@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head><title>Detect</title></head>
+<body>
+<canvas id='c'></canvas><pre id='out'></pre>
+<script>
+  const img = new Image();
+  img.onload = () => {
+    const W = img.width; const H = img.height;
+    const c = document.getElementById('c');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0,0,W,H).data;
+    
+    // detect horizontal and vertical lines to find boxes
+    // For simplicity, we can do edge detection or connected components
+    const isDark = (x,y) => {
+       const i = (y*W+x)*4;
+       return (d[i]+d[i+1]+d[i+2])/3 < 100;
+    };
+    
+    // connected components of dark pixels
+    const labels = new Int32Array(W * H);
+    let nextLabel = 1;
+    const comps = [];
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1], [-1,-1],[-1,1],[1,-1],[1,1]];
+    
+    for(let y=0; y<H; y++){
+      for(let x=0; x<W; x++){
+         let idx = y*W+x;
+         if(isDark(x,y) && labels[idx]===0){
+            let q = [[x,y]];
+            let minX=x, maxX=x, minY=y, maxY=y, count=0;
+            labels[idx] = nextLabel;
+            while(q.length>0){
+               let [cx,cy] = q.pop();
+               count++;
+               if(cx<minX)minX=cx; if(cx>maxX)maxX=cx;
+               if(cy<minY)minY=cy; if(cy>maxY)maxY=cy;
+               for(let d=0; d<8; d++){
+                  let nx=cx+dirs[d][0], ny=cy+dirs[d][1];
+                  if(nx>=0 && nx<W && ny>=0 && ny<H){
+                     let ni = ny*W+nx;
+                     if(isDark(nx,ny) && labels[ni]===0){
+                        labels[ni]=nextLabel;
+                        q.push([nx,ny]);
+                     }
+                  }
+               }
+            }
+            if(count > 100) {
+                comps.push({id:nextLabel, minX, minY, maxX, maxY, w:maxX-minX, h:maxY-minY, count});
+            }
+            nextLabel++;
+         }
+      }
+    }
+    
+    document.getElementById('out').innerText = JSON.stringify(comps, null, 2);
+  };
+  img.src = 'data:image/jpeg;base64,' + $b64;
+</script>
+</body></html>

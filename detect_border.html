@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head><title>Extract Lines</title></head>
+<body>
+<canvas id='c'></canvas>
+<pre id='out'></pre>
+<script>
+  const img = new Image();
+  img.onload = () => {
+    const W = img.width; const H = img.height;
+    const c = document.getElementById('c');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0,0,W,H).data;
+    
+    // detect outer black border
+    const isDark = (x,y) => {
+       const i = (y*W+x)*4;
+       return (d[i]+d[i+1]+d[i+2])/3 < 50;
+    };
+    
+    let top=H, bottom=0, left=W, right=0;
+    for(let y=0; y<H; y++){
+      for(let x=0; x<W; x++){
+         if(isDark(x,y)){
+            if(y<top)top=y;
+            if(y>bottom)bottom=y;
+            if(x<left)left=x;
+            if(x>right)right=x;
+         }
+      }
+    }
+    
+    // detect red dashed thin lines for machine bounding boxes
+    const isRed = (x,y) => {
+       const i = (y*W+x)*4;
+       return d[i] > 150 && d[i+1] < 100 && d[i+2] < 100;
+    };
+    
+    // simple scan
+    let redDots = [];
+    for(let y=0; y<H; y++){
+      for(let x=0; x<W; x++){
+        if(isRed(x,y)){
+            redDots.push({x,y});
+        }
+      }
+    }
+    
+    let rMinX=W, rMaxX=0, rMinYA=H, rMaxYA=0, rMinYB=H, rMaxYB=0;
+    for(const pt of redDots) {
+        if(pt.x < rMinX) rMinX = pt.x;
+        if(pt.x > rMaxX) rMaxX = pt.x;
+        if(pt.y < H/2) {
+            // Line B
+            if(pt.y < rMinYB) rMinYB = pt.y;
+            if(pt.y > rMaxYB) rMaxYB = pt.y;
+        } else {
+            // Line A
+            if(pt.y < rMinYA) rMinYA = pt.y;
+            if(pt.y > rMaxYA) rMaxYA = pt.y;
+        }
+    }
+
+    document.getElementById('out').innerText = "Border: Left:" + left + " Top:" + top + " Right:" + right + " Bottom:" + bottom + "\n" +
+      "Line B (top): X:" + rMinX + "-" + rMaxX + " Y:" + rMinYB + "-" + rMaxYB + "\n" +
+      "Line A (bot): X:" + rMinX + "-" + rMaxX + " Y:" + rMinYA + "-" + rMaxYA + "\n" + 
+      "Image Dimensions: W:" + W + " H:" + H;
+  };
+  img.src = 'data:image/jpeg;base64,' + $b64;
+</script>
+</body></html>
