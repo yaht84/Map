@@ -89,7 +89,7 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useRef, useEffect, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Trash2, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation } from 'lucide-react';
+        import { Trash2, Map as MapIcon, Database, Layers, Eye, EyeOff, Hash, Navigation, Save } from 'lucide-react';
 
         const ROOM_W = 1280;
         const ROOM_H = 720;
@@ -341,18 +341,29 @@
 
                     console.log('Rows:', rows.map((r, i) => `Row ${i + 1}: ${r.length} pts at y≈${r[0].y}`).join(', '));
 
+                    // Check for saved point locations in localStorage
+                    const saved = localStorage.getItem('acousticMapPoints');
+                    let savedMap = {};
+                    if (saved) {
+                        try {
+                            const parsed = JSON.parse(saved);
+                            parsed.forEach(p => { savedMap[p.id] = p; });
+                        } catch (e) { console.warn('Failed to parse saved points:', e); }
+                    }
+
                     const initialPoints = [];
                     let pid = 1;
 
                     rows.forEach((row, ri) => {
                         const labels = rowLabels(ri, row.length);
                         row.forEach((pos, pi) => {
-                            const randomDb = parseFloat((Math.random() * 25 + 70).toFixed(1));
+                            const id = pid++;
+                            const savedPt = savedMap[id];
                             initialPoints.push({
-                                id: pid++,
-                                x: snap(pos.x),
-                                y: snap(pos.y),
-                                value: randomDb,
+                                id,
+                                x: savedPt ? savedPt.x : snap(pos.x),
+                                y: savedPt ? savedPt.y : snap(pos.y),
+                                value: savedPt ? savedPt.value : parseFloat((Math.random() * 25 + 70).toFixed(1)),
                                 label: labels[pi],
                                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                             });
@@ -401,7 +412,22 @@
                 window.addEventListener('pointerup', handlePointerUp);
             };
 
-            // Heatmap rendering - CLIPPED to border
+            // Isoline color helper: maps dB to RGB based on min/max range
+            const isoColorRgb = (db, minDb, maxDb) => {
+                let pct = (db - minDb) / (maxDb - minDb);
+                pct = Math.max(0, Math.min(1, pct));
+                let r = 0, g = 0, b = 0;
+                if (pct < 0.33) {
+                    let mix = pct / 0.33; r = Math.floor(255 * mix); g = 255;
+                } else if (pct < 0.66) {
+                    let mix = (pct - 0.33) / 0.33; r = 255; g = Math.floor(255 * (1 - (0.5 * mix)));
+                } else {
+                    let mix = (pct - 0.66) / 0.34; r = 255; g = Math.floor(128 * (1 - mix));
+                }
+                return { r, g, b };
+            };
+
+            // Heatmap rendering with ISOLINES - CLIPPED to border
             useEffect(() => {
                 if (!showHeatmap || points.length === 0) {
                     const ctx = canvasRef.current?.getContext('2d');
@@ -413,11 +439,10 @@
                 if (!canvas) return;
                 const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-                const res = 10;
+                const res = 5; // Higher resolution for smoother isolines
 
                 ctx.clearRect(0, 0, ROOM_W, ROOM_H);
 
-                // Clip to INNER edge of border rectangle (inset past the border line)
                 const BORDER_LINE_W = 5;
                 const clipLeft = border.left + BORDER_LINE_W;
                 const clipTop = border.top + BORDER_LINE_W;
@@ -431,55 +456,148 @@
 
                 const POWER = 3;
                 const validPoints = points.filter(p => p.value !== null);
-
                 if (validPoints.length === 0) { ctx.restore(); return; }
 
                 let maxDb = Math.max(...validPoints.map(p => p.value));
                 let minDb = Math.min(...validPoints.map(p => p.value));
-
                 if (maxDb - minDb < 10) minDb = Math.max(0, maxDb - 15);
 
-                // Only render within clipped border bounds
+                // Generate isoline levels every 2 dB
+                const isoStep = 2;
+                const isoMin = Math.floor(minDb / isoStep) * isoStep;
+                const isoMax = Math.ceil(maxDb / isoStep) * isoStep;
+                const levels = [];
+                for (let l = isoMin; l <= isoMax; l += isoStep) levels.push(l);
+
+                // Compute interpolated grid
                 const startCol = Math.floor(clipLeft / res);
                 const endCol = Math.ceil((clipLeft + clipWidth) / res);
                 const startRow = Math.floor(clipTop / res);
                 const endRow = Math.ceil((clipTop + clipHeight) / res);
+                const cols = endCol - startCol;
+                const rows = endRow - startRow;
+                const grid = new Float32Array(cols * rows);
 
-                for (let c = startCol; c < endCol; c++) {
-                    for (let r = startRow; r < endRow; r++) {
-                        let px = c * res + res / 2;
-                        let py = r * res + res / 2;
-                        let numerator = 0;
-                        let denominator = 0;
+                for (let c = 0; c < cols; c++) {
+                    for (let r = 0; r < rows; r++) {
+                        let px = (startCol + c) * res + res / 2;
+                        let py = (startRow + r) * res + res / 2;
+                        let numerator = 0, denominator = 0;
 
                         for (let i = 0; i < validPoints.length; i++) {
                             let p = validPoints[i];
                             let dist = Math.hypot(px - p.x, py - p.y);
                             if (dist < 1) dist = 1;
-
                             let weight = 1 / Math.pow(dist, POWER);
                             numerator += weight * p.value;
                             denominator += weight;
                         }
 
-                        let val = numerator / denominator;
-
-                        let pct = (val - minDb) / (maxDb - minDb);
-                        pct = Math.max(0, Math.min(1, pct));
-
-                        let rCol = 0, gCol = 0, bCol = 0;
-                        if (pct < 0.33) {
-                            let mix = pct / 0.33; rCol = Math.floor(255 * mix); gCol = 255;
-                        } else if (pct < 0.66) {
-                            let mix = (pct - 0.33) / 0.33; rCol = 255; gCol = Math.floor(255 * (1 - (0.5 * mix)));
-                        } else {
-                            let mix = (pct - 0.66) / 0.34; rCol = 255; gCol = Math.floor(128 * (1 - mix));
-                        }
-
-                        ctx.fillStyle = `rgba(${rCol}, ${gCol}, ${bCol}, 0.8)`;
-                        ctx.fillRect(c * res, r * res, res, res);
+                        grid[r * cols + c] = numerator / denominator;
                     }
                 }
+
+                // Fill with quantized colors (discrete bands between isolines)
+                for (let c = 0; c < cols; c++) {
+                    for (let r = 0; r < rows; r++) {
+                        let val = grid[r * cols + c];
+                        // Quantize to nearest level below
+                        let quantized = isoMin;
+                        for (let i = levels.length - 1; i >= 0; i--) {
+                            if (val >= levels[i]) { quantized = levels[i]; break; }
+                        }
+                        const { r: rC, g: gC, b: bC } = isoColorRgb(quantized, minDb, maxDb);
+                        ctx.fillStyle = `rgba(${rC}, ${gC}, ${bC}, 0.7)`;
+                        ctx.fillRect((startCol + c) * res, (startRow + r) * res, res, res);
+                    }
+                }
+
+                // Draw contour lines using marching squares
+                for (const level of levels) {
+                    // Thicker lines for major levels (multiples of 10), thinner for minor
+                    const isMajor = (level % 5 === 0);
+                    ctx.strokeStyle = isMajor ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0.25)';
+                    ctx.lineWidth = isMajor ? 1.5 : 0.8;
+                    ctx.beginPath();
+
+                    for (let c = 0; c < cols - 1; c++) {
+                        for (let r = 0; r < rows - 1; r++) {
+                            const tl = grid[r * cols + c];
+                            const tr = grid[r * cols + (c + 1)];
+                            const bl = grid[(r + 1) * cols + c];
+                            const br = grid[(r + 1) * cols + (c + 1)];
+
+                            let caseIdx = 0;
+                            if (tl >= level) caseIdx |= 8;
+                            if (tr >= level) caseIdx |= 4;
+                            if (br >= level) caseIdx |= 2;
+                            if (bl >= level) caseIdx |= 1;
+
+                            if (caseIdx === 0 || caseIdx === 15) continue;
+
+                            const x0 = (startCol + c) * res;
+                            const y0 = (startRow + r) * res;
+
+                            const lerp = (va, vb) => {
+                                if (Math.abs(vb - va) < 0.001) return 0.5;
+                                return (level - va) / (vb - va);
+                            };
+
+                            const topPt    = { x: x0 + res * lerp(tl, tr), y: y0 };
+                            const rightPt  = { x: x0 + res, y: y0 + res * lerp(tr, br) };
+                            const bottomPt = { x: x0 + res * lerp(bl, br), y: y0 + res };
+                            const leftPt   = { x: x0, y: y0 + res * lerp(tl, bl) };
+
+                            const line = (a, b) => { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); };
+
+                            switch (caseIdx) {
+                                case 1: line(bottomPt, leftPt); break;
+                                case 2: line(rightPt, bottomPt); break;
+                                case 3: line(rightPt, leftPt); break;
+                                case 4: line(topPt, rightPt); break;
+                                case 5: line(topPt, leftPt); line(rightPt, bottomPt); break;
+                                case 6: line(topPt, bottomPt); break;
+                                case 7: line(topPt, leftPt); break;
+                                case 8: line(leftPt, topPt); break;
+                                case 9: line(bottomPt, topPt); break;
+                                case 10: line(leftPt, bottomPt); line(topPt, rightPt); break;
+                                case 11: line(rightPt, topPt); break;
+                                case 12: line(leftPt, rightPt); break;
+                                case 13: line(bottomPt, rightPt); break;
+                                case 14: line(leftPt, bottomPt); break;
+                            }
+                        }
+                    }
+                    ctx.stroke();
+
+                    // Label major isolines with dB values
+                    if (isMajor) {
+                        ctx.font = 'bold 9px sans-serif';
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+                        ctx.lineWidth = 2.5;
+                        // Find a few points on this contour to place labels
+                        let labelPlaced = 0;
+                        const labelInterval = Math.floor(cols / 4);
+                        for (let c = 0; c < cols - 1 && labelPlaced < 3; c++) {
+                            if (c % labelInterval !== 0) continue;
+                            for (let r = 0; r < rows - 1; r++) {
+                                const tl = grid[r * cols + c];
+                                const tr = grid[r * cols + (c + 1)];
+                                if ((tl < level) !== (tr < level)) {
+                                    const x0 = (startCol + c) * res + res / 2;
+                                    const y0 = (startRow + r) * res;
+                                    const label = level + ' dB';
+                                    ctx.strokeText(label, x0, y0);
+                                    ctx.fillText(label, x0, y0);
+                                    labelPlaced++;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 ctx.restore();
             }, [points, showHeatmap, border]);
 
@@ -488,6 +606,31 @@
                 if (db <= 85) return '#facc15';
                 if (db <= 90) return '#f97316';
                 return '#ef4444';
+            };
+
+            // Dynamic legend levels based on actual data
+            const legendLevels = useMemo(() => {
+                const validPoints = points.filter(p => p.value !== null);
+                if (validPoints.length === 0) return [];
+                let maxDb = Math.max(...validPoints.map(p => p.value));
+                let minDb = Math.min(...validPoints.map(p => p.value));
+                if (maxDb - minDb < 10) minDb = Math.max(0, maxDb - 15);
+                const isoStep = 2;
+                const isoMin = Math.floor(minDb / isoStep) * isoStep;
+                const isoMax = Math.ceil(maxDb / isoStep) * isoStep;
+                const result = [];
+                for (let l = isoMin; l <= isoMax; l += isoStep) {
+                    const { r, g, b } = isoColorRgb(l, minDb, maxDb);
+                    result.push({ value: l, color: `rgb(${r}, ${g}, ${b})` });
+                }
+                return result;
+            }, [points]);
+
+            // Save point locations to localStorage
+            const saveLocations = () => {
+                const data = points.map(p => ({ id: p.id, x: p.x, y: p.y, value: p.value, label: p.label }));
+                localStorage.setItem('acousticMapPoints', JSON.stringify(data));
+                alert('Pozycje punktów zostały zapisane!');
             };
 
             const handleImageUpload = (e) => {
@@ -553,6 +696,15 @@
                             >
                                 <span className="text-[9px] font-black uppercase leading-none mb-1">Etykiety</span>
                                 {showDbValues ? <span className="text-xs font-black uppercase leading-none">Wartości dB</span> : <span className="text-xs font-black uppercase leading-none">Numery ID</span>}
+                            </button>
+
+                            <button
+                                onClick={saveLocations}
+                                className="flex flex-col items-center justify-center p-2 rounded-xl transition-all border bg-green-500/20 text-green-400 border-green-500/50 hover:bg-green-500/30"
+                                title="Zapisz pozycje punktów"
+                            >
+                                <Save size={16} />
+                                <span className="text-[9px] font-black uppercase leading-none mt-1">Zapisz</span>
                             </button>
                         </div>
                     </header>
@@ -629,19 +781,12 @@
                             </div>
 
                             {/* Legend */}
-                            <div className="mt-4 flex flex-wrap gap-4 justify-center shrink-0">
-                                {[
-                                    { label: '< 80 dB', color: '#22c55e', desc: 'Poziom dopuszczalny' },
-                                    { label: '80 - 85 dB', color: '#facc15', desc: 'Próg ostrzegawczy' },
-                                    { label: '85 - 90 dB', color: '#f97316', desc: 'Obowiązek ochrony' },
-                                    { label: '> 90 dB', color: '#ef4444', desc: 'Strefa niebezpieczna' },
-                                ].map(item => (
-                                    <div key={item.label} className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-100 shadow-sm">
-                                        <div className="w-4 h-4 rounded-full" style={{ backgroundColor: item.color }}></div>
-                                        <div className="flex flex-col">
-                                            <span className="text-[10px] font-black text-slate-700 leading-none">{item.label}</span>
-                                            <span className="text-[8px] text-slate-400 font-bold uppercase">{item.desc}</span>
-                                        </div>
+                            <div className="mt-4 flex flex-wrap gap-1 justify-center shrink-0 items-center">
+                                <span className="text-[9px] font-black text-slate-500 uppercase mr-2">dB(A):</span>
+                                {legendLevels.map(item => (
+                                    <div key={item.value} className="flex flex-col items-center gap-0.5 px-1">
+                                        <div className="w-6 h-4 rounded-sm border border-slate-200" style={{ backgroundColor: item.color }}></div>
+                                        <span className="text-[8px] font-bold text-slate-600 leading-none">{item.value}</span>
                                     </div>
                                 ))}
                             </div>
