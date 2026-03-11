@@ -408,6 +408,12 @@
             const [importWarnings, setImportWarnings] = useState([]);
             const [showWarnings, setShowWarnings] = useState(false);
 
+            // Acoustic decay settings
+            const [decayEnabled, setDecayEnabled] = useState(true);
+            const [decayRate, setDecayRate] = useState(6); // dB per doubling of distance (6 = inverse square law)
+            const [decayRefDist, setDecayRefDist] = useState(30); // reference distance in pixels (no decay within this radius)
+            const [decayMaxDb, setDecayMaxDb] = useState(40); // max decay cap in dB (reverberant field floor)
+
             // Sidebar state
             const [sidebarOpen, setSidebarOpen] = useState(true);
 
@@ -606,6 +612,14 @@
                 const validPoints = effectivePoints.filter(p => p.value !== null && p.hasAnyData);
                 if (validPoints.length === 0) { ctx.restore(); return; }
 
+                // Acoustic decay: calculate decayed value at distance
+                // Sound decays by decayRate dB per doubling of distance (6 dB = inverse square law)
+                const applyDecay = decayEnabled ? (value, dist) => {
+                    if (dist <= decayRefDist) return value;
+                    const decay = decayRate * Math.log2(dist / decayRefDist);
+                    return value - Math.min(decay, decayMaxDb);
+                } : (value) => value;
+
                 let maxDb = Math.max(...validPoints.map(p => p.value));
                 let minDb = Math.min(...validPoints.map(p => p.value));
                 if (maxDb - minDb < 10) minDb = Math.max(0, maxDb - 15);
@@ -635,7 +649,8 @@
                             let dist = Math.hypot(px - p.x, py - p.y);
                             if (dist < 1) dist = 1;
                             let weight = 1 / Math.pow(dist, POWER);
-                            numerator += weight * p.value;
+                            let decayedValue = applyDecay(p.value, dist);
+                            numerator += weight * decayedValue;
                             denominator += weight;
                         }
 
@@ -746,7 +761,7 @@
                 }
 
                 ctx.restore();
-            }, [effectivePoints, showHeatmap, border, activeMode, activeParam]);
+            }, [effectivePoints, showHeatmap, border, activeMode, activeParam, decayEnabled, decayRate, decayRefDist, decayMaxDb]);
 
             const getNoiseColor = (db) => {
                 if (db == null) return '#94a3b8';
@@ -970,6 +985,19 @@
                                 <button onClick={() => setShowMachines(!showMachines)} className={`p-1.5 rounded-lg transition-all ${showMachines ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'}`} title="Maszyny">
                                     <Layers size={12} />
                                 </button>
+                            </div>
+
+                            {/* Acoustic Decay */}
+                            <div className="flex bg-slate-800 p-1 rounded-xl items-center gap-1 border border-slate-700">
+                                <button onClick={() => setDecayEnabled(!decayEnabled)} className={`p-1.5 rounded-lg transition-all flex gap-1 items-center text-[10px] font-bold uppercase ${decayEnabled ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-400'}`} title="Zanik akustyczny">
+                                    Zanik
+                                </button>
+                                {decayEnabled && (<>
+                                    <span className="text-[8px] text-slate-400 ml-1" title="Tłumienie dB na podwojenie odległości">{decayRate}dB</span>
+                                    <input type="range" min="1" max="12" step="0.5" value={decayRate} onChange={(e) => setDecayRate(Number(e.target.value))} className="w-12 accent-amber-500" title="Tłumienie [dB/podwojenie odległości]" />
+                                    <span className="text-[8px] text-slate-400" title="Dystans referencyjny (px)">{decayRefDist}px</span>
+                                    <input type="range" min="5" max="100" step="5" value={decayRefDist} onChange={(e) => setDecayRefDist(Number(e.target.value))} className="w-12 accent-amber-500" title="Dystans referencyjny [px]" />
+                                </>)}
                             </div>
 
                             {/* Background */}
