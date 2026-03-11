@@ -107,6 +107,28 @@
         const ROOM_W = 1280;
         const ROOM_H = 720;
 
+        // Real room dimensions in meters
+        const ROOM_REAL_W = 49.0; // m
+        const ROOM_REAL_H = 19.3; // m
+        const PX_TO_M = (ROOM_REAL_W / ROOM_W + ROOM_REAL_H / ROOM_H) / 2; // ~0.033 m/px
+
+        // Air absorption coefficients (dB/m) at 20°C, 50% RH per ISO 9613-1
+        const AIR_ABSORPTION = {
+            '0.8 Hz': 0, '1 Hz': 0, '1.25 Hz': 0, '1.6 Hz': 0, '2 Hz': 0,
+            '2.5 Hz': 0, '3.15 Hz': 0, '4 Hz': 0, '5 Hz': 0, '6.3 Hz': 0,
+            '8 Hz': 0, '10 Hz': 0, '12.5 Hz': 0, '16 Hz': 0, '20 Hz': 0,
+            '25 Hz': 0.00005, '31.5 Hz': 0.00008, '40 Hz': 0.0001,
+            '50 Hz': 0.00012, '63 Hz': 0.00012, '80 Hz': 0.00015,
+            '100 Hz': 0.0002, '125 Hz': 0.0004, '160 Hz': 0.0006,
+            '200 Hz': 0.0008, '250 Hz': 0.0011, '315 Hz': 0.0014,
+            '400 Hz': 0.0016, '500 Hz': 0.0019, '630 Hz': 0.0025,
+            '800 Hz': 0.0030, '1000 Hz': 0.0037, '1250 Hz': 0.0048,
+            '1600 Hz': 0.0067, '2000 Hz': 0.0097, '2500 Hz': 0.0140,
+            '3150 Hz': 0.0200, '4000 Hz': 0.0328, '5000 Hz': 0.0530,
+            '6300 Hz': 0.0800, '8000 Hz': 0.1170, '10000 Hz': 0.1680,
+            '12500 Hz': 0.2500, '16000 Hz': 0.3800
+        };
+
         // 1/3 octave band frequencies
         const OCTAVE_BANDS = [
             '0.8 Hz','1 Hz','1.25 Hz','1.6 Hz','2 Hz','2.5 Hz','3.15 Hz','4 Hz','5 Hz',
@@ -612,12 +634,16 @@
                 const validPoints = effectivePoints.filter(p => p.value !== null && p.hasAnyData);
                 if (validPoints.length === 0) { ctx.restore(); return; }
 
-                // Acoustic decay: calculate decayed value at distance
-                // Sound decays by decayRate dB per doubling of distance (6 dB = inverse square law)
-                const applyDecay = decayEnabled ? (value, dist) => {
-                    if (dist <= decayRefDist) return value;
-                    const decay = decayRate * Math.log2(dist / decayRefDist);
-                    return value - Math.min(decay, decayMaxDb);
+                // Acoustic decay with air absorption (ISO 9613-1)
+                // Sound decays by decayRate dB per doubling of distance + air absorption per meter
+                const airAbsCoeff = AIR_ABSORPTION[activeParam] || 0.004; // default ~1kHz for broadband
+                const refDistM = decayRefDist * PX_TO_M;
+                const applyDecay = decayEnabled ? (value, distPx) => {
+                    const distM = distPx * PX_TO_M;
+                    if (distM <= refDistM) return value;
+                    const geomDecay = decayRate * Math.log2(distM / refDistM);
+                    const airDecay = airAbsCoeff * (distM - refDistM);
+                    return value - Math.min(geomDecay + airDecay, decayMaxDb);
                 } : (value) => value;
 
                 let maxDb = Math.max(...validPoints.map(p => p.value));
@@ -869,12 +895,20 @@
                 });
             };
 
-            // Get param display name
+            // Get param display name with subscripts
             const getParamLabel = () => {
-                if (activeParam === 'LAeq') return 'LAeq [dB]';
-                if (activeParam === 'LASmax') return 'LASmax [dB]';
-                if (activeParam === 'LCpeak') return 'LCpeak [dB]';
+                if (activeParam === 'LAeq') return <span className="normal-case"><i>L</i><sub>Aeq</sub> [dB]</span>;
+                if (activeParam === 'LASmax') return <span className="normal-case"><i>L</i><sub>Amax</sub> [dB]</span>;
+                if (activeParam === 'LCpeak') return <span className="normal-case"><i>L</i><sub>Cpeak</sub> [dB]</span>;
                 return `1/3 Oct Leq ${activeParam}`;
+            };
+
+            // Short param label (no units, for buttons/cards)
+            const paramLabelShort = (param) => {
+                if (param === 'LAeq') return <span className="normal-case"><i>L</i><sub>Aeq</sub></span>;
+                if (param === 'LASmax') return <span className="normal-case"><i>L</i><sub>Amax</sub></span>;
+                if (param === 'LCpeak') return <span className="normal-case"><i>L</i><sub>Cpeak</sub></span>;
+                return param;
             };
 
             return (
@@ -937,19 +971,19 @@
                                     onClick={() => { setActiveParam('LAeq'); setShowOctaveDropdown(false); }}
                                     className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LAeq' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
                                 >
-                                    LAeq
+                                    {paramLabelShort('LAeq')}
                                 </button>
                                 <button
                                     onClick={() => { setActiveParam('LASmax'); setShowOctaveDropdown(false); }}
                                     className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LASmax' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
                                 >
-                                    LASmax
+                                    {paramLabelShort('LASmax')}
                                 </button>
                                 <button
                                     onClick={() => { setActiveParam('LCpeak'); setShowOctaveDropdown(false); }}
                                     className={`px-2 py-1.5 rounded-lg text-[10px] font-black transition-all ${activeParam === 'LCpeak' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
                                 >
-                                    LCpeak
+                                    {paramLabelShort('LCpeak')}
                                 </button>
                                 <div className="relative">
                                     <button
@@ -995,8 +1029,9 @@
                                 {decayEnabled && (<>
                                     <span className="text-[8px] text-slate-400 ml-1" title="Tłumienie dB na podwojenie odległości">{decayRate}dB</span>
                                     <input type="range" min="1" max="12" step="0.5" value={decayRate} onChange={(e) => setDecayRate(Number(e.target.value))} className="w-12 accent-amber-500" title="Tłumienie [dB/podwojenie odległości]" />
-                                    <span className="text-[8px] text-slate-400" title="Dystans referencyjny (px)">{decayRefDist}px</span>
-                                    <input type="range" min="5" max="100" step="5" value={decayRefDist} onChange={(e) => setDecayRefDist(Number(e.target.value))} className="w-12 accent-amber-500" title="Dystans referencyjny [px]" />
+                                    <span className="text-[8px] text-slate-400" title="Dystans referencyjny">{(decayRefDist * PX_TO_M).toFixed(1)}m</span>
+                                    <input type="range" min="5" max="100" step="5" value={decayRefDist} onChange={(e) => setDecayRefDist(Number(e.target.value))} className="w-12 accent-amber-500" title="Dystans referencyjny [m]" />
+                                    <span className="text-[8px] text-amber-400" title="Tłumienie w powietrzu [dB/m]">α:{(AIR_ABSORPTION[activeParam] || 0.004).toFixed(4)}</span>
                                 </>)}
                             </div>
 
@@ -1208,15 +1243,15 @@
                                             return (
                                                 <div className="grid grid-cols-3 gap-2 mb-3">
                                                     <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LAeq' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LAeq')}>
-                                                        <p className="text-[8px] text-slate-400 font-bold">LAeq</p>
+                                                        <p className="text-[8px] text-slate-400 font-bold">{paramLabelShort('LAeq')}</p>
                                                         <p className="text-sm font-black">{m.LAeq ?? '---'}</p>
                                                     </div>
                                                     <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LASmax' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LASmax')}>
-                                                        <p className="text-[8px] text-slate-400 font-bold">LASmax</p>
+                                                        <p className="text-[8px] text-slate-400 font-bold">{paramLabelShort('LASmax')}</p>
                                                         <p className="text-sm font-black">{m.LASmax ?? '---'}</p>
                                                     </div>
                                                     <div className={`p-2 rounded-lg text-center cursor-pointer transition-all ${activeParam === 'LCpeak' ? 'bg-indigo-600' : 'bg-slate-700'}`} onClick={() => setActiveParam('LCpeak')}>
-                                                        <p className="text-[8px] text-slate-400 font-bold">LCpeak</p>
+                                                        <p className="text-[8px] text-slate-400 font-bold">{paramLabelShort('LCpeak')}</p>
                                                         <p className="text-sm font-black">{m.LCpeak ?? '---'}</p>
                                                     </div>
                                                 </div>
