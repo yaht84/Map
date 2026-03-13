@@ -878,155 +878,21 @@
                 reader.readAsArrayBuffer(file);
             };
 
-            // Export map to image — custom canvas rendering (white bg, large fonts, no frame)
+            // Export map to image
             const exportMap = () => {
-                const heatmapCanvas = canvasRef.current;
-                if (!heatmapCanvas) return;
-
-                // Plain-text param label for canvas drawing
-                const paramText = activeParam === 'LAeq' ? 'L\u2090\u2091\u209A' // Lₐₑᵨ - approximate
-                    : activeParam === 'LASmax' ? 'L\u2090\u2098\u2090\u2093'
-                    : activeParam === 'LCpeak' ? 'L\u1D9C\u209A\u2091\u2090\u2096'
-                    : activeParam;
-                // Simpler fallback labels
-                const paramLabel = activeParam === 'LAeq' ? 'LAeq'
-                    : activeParam === 'LASmax' ? 'LAmax'
-                    : activeParam === 'LCpeak' ? 'LCpeak'
-                    : activeParam;
-                const modeLabel = activeMode === 'D' ? 'Drukowanie' : 'Zbrojenie';
-
-                const SCALE = 2;
-                const LEGEND_H = 80;
-                const HEADER_H = 50;
-                const PADDING = 20;
-                const totalW = ROOM_W * SCALE + PADDING * 2;
-                const totalH = ROOM_H * SCALE + HEADER_H + LEGEND_H + PADDING * 2;
-
-                const expCanvas = document.createElement('canvas');
-                expCanvas.width = totalW;
-                expCanvas.height = totalH;
-                const ctx = expCanvas.getContext('2d');
-
-                // White background
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, totalW, totalH);
-
-                const mapX = PADDING;
-                const mapY = HEADER_H;
-                const mapW = ROOM_W * SCALE;
-                const mapH = ROOM_H * SCALE;
-
-                // Draw blueprint image if visible
-                if (showImage && imageSrc) {
-                    const img = new Image();
-                    img.crossOrigin = 'anonymous';
-                    img.onload = () => {
-                        ctx.globalAlpha = imageOpacity;
-                        ctx.drawImage(img, mapX, mapY, mapW, mapH);
-                        ctx.globalAlpha = 1.0;
-                        drawHeatmapAndFinish();
-                    };
-                    img.src = imageSrc;
-                } else {
-                    drawHeatmapAndFinish();
-                }
-
-                function drawHeatmapAndFinish() {
-                    // Draw heatmap canvas
-                    if (showHeatmap) {
-                        ctx.drawImage(heatmapCanvas, mapX, mapY, mapW, mapH);
-                    }
-
-                    // Draw measurement points
-                    if (showPoints) {
-                        effectivePoints.forEach(point => {
-                            const px = mapX + point.x * SCALE;
-                            const py = mapY + point.y * SCALE;
-                            const hasData = point.hasAnyData && point.value !== null;
-                            const radius = 14;
-
-                            // Circle
-                            ctx.beginPath();
-                            ctx.arc(px, py, radius, 0, Math.PI * 2);
-                            ctx.fillStyle = hasData ? '#ffffff' : '#e2e8f0';
-                            ctx.fill();
-                            ctx.strokeStyle = hasData ? '#334155' : '#94a3b8';
-                            ctx.lineWidth = 2;
-                            ctx.stroke();
-
-                            // Label
-                            ctx.font = 'bold 13px sans-serif';
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'middle';
-                            ctx.fillStyle = hasData ? '#1e293b' : '#94a3b8';
-                            const label = showDbValues && point.value != null ? Math.round(point.value).toString() : point.id.toString();
-                            ctx.fillText(label, px, py);
-                        });
-                    }
-
-                    // Draw thin border around map area
-                    ctx.strokeStyle = '#cbd5e1';
-                    ctx.lineWidth = 1;
-                    ctx.strokeRect(mapX, mapY, mapW, mapH);
-
-                    // Header: mode / param
-                    ctx.font = 'bold 22px sans-serif';
-                    ctx.fillStyle = '#334155';
-                    ctx.textAlign = 'left';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(`${modeLabel}  /  ${paramLabel} [dB]`, mapX + 4, HEADER_H / 2);
-
-                    // Room dimensions
-                    ctx.font = '14px sans-serif';
-                    ctx.fillStyle = '#94a3b8';
-                    ctx.textAlign = 'right';
-                    ctx.fillText(`${ROOM_REAL_W} m \u00d7 ${ROOM_REAL_H} m`, mapX + mapW - 4, HEADER_H / 2);
-
-                    // Legend
-                    if (legendLevels.length > 0) {
-                        const legendY = mapY + mapH + 16;
-                        const swatchW = 36;
-                        const swatchH = 20;
-                        const gap = 4;
-                        const totalLegendW = legendLevels.length * (swatchW + gap) - gap;
-                        let startX = mapX + (mapW - totalLegendW) / 2;
-
-                        ctx.font = 'bold 14px sans-serif';
-                        ctx.fillStyle = '#64748b';
-                        ctx.textAlign = 'right';
-                        ctx.textBaseline = 'middle';
-                        ctx.fillText(`${paramLabel} [dB]:`, startX - 12, legendY + swatchH / 2);
-
-                        legendLevels.forEach((item, i) => {
-                            const x = startX + i * (swatchW + gap);
-                            // Swatch
-                            ctx.fillStyle = item.color;
-                            ctx.fillRect(x, legendY, swatchW, swatchH);
-                            ctx.strokeStyle = '#cbd5e1';
-                            ctx.lineWidth = 0.5;
-                            ctx.strokeRect(x, legendY, swatchW, swatchH);
-                            // Value
-                            ctx.font = 'bold 12px sans-serif';
-                            ctx.fillStyle = '#334155';
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'top';
-                            ctx.fillText(item.value.toString(), x + swatchW / 2, legendY + swatchH + 3);
-                        });
-                    }
-
-                    // Copyright
-                    ctx.font = '12px sans-serif';
-                    ctx.fillStyle = '#94a3b8';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'bottom';
-                    ctx.fillText('\u00a9 CIOP-PIB 2026', totalW / 2, totalH - 6);
-
-                    // Download
+                const mapEl = mapExportRef.current;
+                if (!mapEl) return;
+                html2canvas(mapEl, {
+                    backgroundColor: '#f5f5fa',
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true
+                }).then(canvas => {
                     const link = document.createElement('a');
                     link.download = `mapa_akustyczna_${activeMode === 'D' ? 'drukowanie' : 'zbrojenie'}_${activeParam}.png`;
-                    link.href = expCanvas.toDataURL('image/png');
+                    link.href = canvas.toDataURL('image/png');
                     link.click();
-                }
+                });
             };
 
             // Get param display name with subscripts
